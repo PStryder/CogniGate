@@ -1,0 +1,341 @@
+CogniGate v0 Specification
+1. Purpose
+
+CogniGate is a general-purpose cognitive execution worker.
+
+It accepts leased work from AsyncGate, performs bounded AI-assisted cognition using explicitly advertised tools, materializes results as durable artifacts, and reports lifecycle state via receipts.
+
+CogniGate does not own goals, memory, or authority.
+It executes cognition under lease, with outputs delivered to explicitly defined sinks.
+
+2. Non-Goals (Explicit)
+
+CogniGate does not:
+
+maintain conversational state
+
+retain long-term memory
+
+decide where outputs go
+
+directly expose third-party APIs to models
+
+store or emit full AI reasoning chains
+
+operate as a chatbot or interactive assistant
+
+These are intentional exclusions.
+
+3. Runtime Model
+
+Runs as a Dockerized REST service
+
+Polls AsyncGate for work leases
+
+Operates in a single responsibility loop
+
+All cognition is job-scoped
+
+All outputs are externalized
+
+All state transitions are receipted
+
+4. Bootstrap & Configuration
+
+On startup, CogniGate bootstraps from the filesystem.
+
+Required Bootstrap Inputs
+
+Instruction Profiles (files):
+
+system instructions
+
+formatting constraints
+
+planning schema
+
+tool usage rules
+
+Plugin Registry:
+
+output sinks
+
+MCP adapters
+
+Environment Configuration:
+
+AsyncGate endpoint + auth
+
+AI provider credentials (e.g., OpenRouter)
+
+MCP upstream endpoints
+
+polling interval
+
+concurrency limits
+
+No runtime mutation of these inputs is allowed.
+
+5. Work Intake & Leasing
+Polling
+
+CogniGate polls AsyncGate for available work.
+
+Lease Acceptance
+
+When work is leased:
+
+CogniGate immediately issues an acceptance receipt
+
+Receipt is sent to AsyncGate (v0 implementation)
+
+Receipt includes:
+
+lease_id
+
+task_id
+
+worker_id
+
+timestamp
+
+status = running
+
+6. Prompt Construction
+
+CogniGate constructs a prompt from:
+
+leased work payload
+
+receipt metadata (IDs, constraints)
+
+selected instruction profile
+
+The prompt must not include:
+
+references to other tasks
+
+prior conversation state
+
+system-internal implementation details
+
+7. Planning Phase
+
+The AI is invoked to produce a structured action plan.
+
+Plan Requirements
+
+Machine-readable
+
+Ordered steps
+
+Each step is one of:
+
+cognitive (analysis / synthesis)
+
+tool invocation
+
+output generation
+
+Tool invocations reference only advertised tools
+
+The plan is treated as advisory, not authoritative.
+
+8. Tool Model
+Tool Advertising
+
+CogniGate advertises a small, stable tool surface to the model.
+
+v0 Required Tools:
+
+mcp.call
+
+artifact.write
+
+receipt.update (optional, v0 internal)
+
+Tool Execution Rule
+
+The model requests tool calls
+
+CogniGate executes tool calls
+
+Tool results are returned to the model as tool responses
+
+The model never calls external systems directly
+
+MCP Bridge Tool
+
+mcp.call allows the model to invoke any configured MCP server indirectly.
+
+CogniGate handles:
+
+routing
+
+authentication
+
+retries
+
+error normalization
+
+9. Execution Loop
+
+For each plan step:
+
+Evaluate step type
+
+If cognitive:
+
+invoke AI with step-specific instructions
+
+If tool call:
+
+execute tool
+
+return result to AI
+
+If failure:
+
+apply retry or abort rules
+
+update receipt
+
+Execution continues until:
+
+plan completes successfully, or
+
+unrecoverable failure occurs
+
+10. Output Materialization
+
+When execution completes:
+
+Output is written to the sink specified in the lease
+
+Sink is resolved via plugin system
+
+Sink returns a durable artifact pointer (URI, ID, path)
+
+CogniGate does not inspect or transform artifacts beyond delivery.
+
+11. Receipts & State Reporting
+Completion Receipt
+
+On completion or failure, CogniGate issues a final receipt including:
+
+task_id
+
+lease_id
+
+final status (complete / failed)
+
+artifact pointers
+
+bounded summary (strict size limit)
+
+error metadata (if applicable)
+
+Receipt Invariant
+
+Receipts never contain:
+
+full AI output
+
+full AI reasoning
+
+large blobs
+
+sensitive payloads
+
+Receipts are ledgers, not logs.
+
+12. Plugin Architecture
+Sink Plugins
+
+Discovered at startup
+
+Self-register with:
+
+sink_id
+
+config schema
+
+deliver() handler
+
+Can be added by:
+
+dropping module into plugin directory
+
+restarting service
+
+MCP Adapters
+
+Fixed upstream endpoints
+
+Tool availability controlled by configuration
+
+Read-only mode supported (recommended for v0)
+
+13. Failure Semantics
+
+Idempotency required per lease
+
+Worker restart must not duplicate effects
+
+Partial results may be delivered, but must be receipted
+
+Failures are explicit, not silent
+
+14. Security Model
+
+All credentials stored outside code
+
+No dynamic endpoint injection by models
+
+Tool surface minimized
+
+MCP servers run with least privilege
+
+Read-only GitHub MCP strongly recommended for v0
+
+15. v0 Reference Use Case
+
+GitHub Code Review
+
+Lease specifies repo + review profile
+
+CogniGate fetches context via GitHub MCP
+
+AI performs review
+
+Output written to Drive or MCP sink
+
+Receipt points to artifact
+
+This use case exercises:
+
+leasing
+
+planning
+
+tool calling
+
+artifact delivery
+
+receipt lifecycle
+
+16. Summary
+
+CogniGate is:
+
+a gate, not a brain
+
+execution, not intent
+
+cognition under lease
+
+artifacts over messages
+
+receipts over logs
+
+It is intentionally boring in the right places.

@@ -1,0 +1,21 @@
+# MCP (Model Context Protocol) Server Configuration
+# These endpoints are available for tool calls via mcp_call
+
+mcp_endpoints:
+  # GitHub MCP server (read-only recommended for v0)
+  - name: github
+    endpoint: http://github-mcp:3000
+    auth_token: ${GITHUB_MCP_TOKEN}
+    read_only: true
+    enabled: true
+
+  # Example: Additional MCP servers can be added here
+  # - name: filesystem
+  #   endpoint: http://fs-mcp:3000
+  #   read_only: true
+  #   enabled: false
+
+  # - name: database
+  #   endpoint: http://db-mcp:3000
+  #   read_only: true
+  #   enabled: false

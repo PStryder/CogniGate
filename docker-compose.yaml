@@ -1,0 +1,31 @@
+version: '3.8'
+
+services:
+  cognigate:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - COGNIGATE_ASYNCGATE_ENDPOINT=http://asyncgate:8080
+      - COGNIGATE_ASYNCGATE_AUTH_TOKEN=${ASYNCGATE_AUTH_TOKEN:-}
+      - COGNIGATE_AI_ENDPOINT=${AI_ENDPOINT:-https://openrouter.ai/api/v1}
+      - COGNIGATE_AI_API_KEY=${AI_API_KEY:-}
+      - COGNIGATE_AI_MODEL=${AI_MODEL:-anthropic/claude-3-opus}
+      - COGNIGATE_WORKER_ID=cognigate-worker-1
+      - COGNIGATE_POLLING_INTERVAL=5.0
+      - COGNIGATE_MAX_CONCURRENT_JOBS=1
+    volumes:
+      - ./config:/etc/cognigate:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
+
+  # Example AsyncGate mock for local testing
+  # asyncgate:
+  #   image: asyncgate:latest
+  #   ports:
+  #     - "8080:8080"
