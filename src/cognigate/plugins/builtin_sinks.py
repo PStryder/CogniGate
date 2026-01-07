@@ -40,6 +40,11 @@ class FileSink(SinkPlugin):
             "required": ["base_path"]
         }
 
+    def _sanitize_path_component(self, value: str) -> str:
+        """Remove path separators and dangerous characters from filename component."""
+        # Only allow alphanumeric, dash, underscore, and dot
+        return "".join(c for c in value if c.isalnum() or c in "-_.")
+
     async def deliver(
         self,
         content: str | bytes,
@@ -51,14 +56,26 @@ class FileSink(SinkPlugin):
 
         template = config.get("filename_template", "{task_id}_{timestamp}.txt")
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        
+        # Sanitize all user-controlled components
         filename = template.format(
-            task_id=metadata.get("task_id", "unknown"),
-            lease_id=metadata.get("lease_id", "unknown"),
+            task_id=self._sanitize_path_component(metadata.get("task_id", "unknown")),
+            lease_id=self._sanitize_path_component(metadata.get("lease_id", "unknown")),
             timestamp=timestamp,
             uuid=str(uuid4())[:8]
         )
 
         file_path = base_path / filename
+        
+        # SECURITY: Verify resolved path is within base_path (prevent traversal)
+        try:
+            resolved_path = file_path.resolve()
+            resolved_base = base_path.resolve()
+            if not str(resolved_path).startswith(str(resolved_base)):
+                raise ValueError(f"Path traversal attempt detected: {filename}")
+        except Exception as e:
+            logger.error(f"Path validation failed: {e}")
+            raise ValueError(f"Invalid file path: {filename}")
 
         if isinstance(content, str):
             async with aiofiles.open(file_path, "w", encoding="utf-8") as f:

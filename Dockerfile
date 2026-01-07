@@ -12,6 +12,11 @@ COPY src/ src/
 # Create config directories
 RUN mkdir -p /etc/cognigate/profiles /etc/cognigate/plugins/sinks
 
+# Create non-root user for security
+RUN groupadd -g 1000 cognigate && \
+    useradd -m -u 1000 -g cognigate cognigate && \
+    chown -R cognigate:cognigate /etc/cognigate /app
+
 # Set Python path
 ENV PYTHONPATH=/app/src
 
@@ -28,6 +33,9 @@ EXPOSE 8000
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD python -c "import httpx; httpx.get('http://localhost:8000/health')" || exit 1
+
+# Switch to non-root user
+USER cognigate
 
 # Run the application
 CMD ["python", "-m", "cognigate.main"]
