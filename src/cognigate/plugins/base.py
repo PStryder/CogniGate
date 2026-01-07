@@ -83,18 +83,78 @@ class SinkRegistry:
         """List all registered sink IDs."""
         return list(self._sinks.keys())
 
+    def _validate_plugin_permissions(self, path: Path) -> bool:
+        """Verify plugins directory has safe permissions.
+        
+        Rejects world-writable or group-writable directories to prevent
+        arbitrary code execution via malicious plugin injection.
+        
+        Args:
+            path: Path to plugins directory
+            
+        Returns:
+            True if permissions are safe, False otherwise
+        """
+        import stat
+        import os
+        
+        try:
+            mode = path.stat().st_mode
+            
+            # Reject if world-writable
+            if mode & stat.S_IWOTH:
+                logger.critical(
+                    f"SECURITY: Plugin directory {path} is world-writable - refusing to load"
+                )
+                return False
+            
+            # Reject if group-writable
+            if mode & stat.S_IWGRP:
+                logger.critical(
+                    f"SECURITY: Plugin directory {path} is group-writable - refusing to load"
+                )
+                return False
+            
+            # Verify owner is current process user
+            current_uid = os.getuid() if hasattr(os, 'getuid') else None
+            if current_uid is not None and path.stat().st_uid != current_uid:
+                logger.warning(
+                    f"SECURITY: Plugin directory {path} not owned by process user "
+                    f"(owner={path.stat().st_uid}, process={current_uid})"
+                )
+                # This is a warning, not a hard failure, for container environments
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to validate plugin directory permissions: {e}")
+            return False
+
     def discover_plugins(self, plugins_dir: Path) -> None:
         """Discover and load sink plugins from a directory.
 
         Plugins are Python modules that define a `register_sink` function
         that takes the registry and registers their sink.
+        
+        SECURITY: Validates directory permissions before loading to prevent
+        arbitrary code execution via malicious plugins.
         """
         if not plugins_dir.exists():
             logger.warning(f"Plugins directory does not exist: {plugins_dir}")
             return
 
+        # SECURITY: Validate permissions before loading any plugins
+        if not self._validate_plugin_permissions(plugins_dir):
+            logger.error(f"Plugin directory {plugins_dir} has unsafe permissions - refusing to load")
+            return
+
         sinks_dir = plugins_dir / "sinks"
         if not sinks_dir.exists():
+            return
+        
+        # Validate sinks subdirectory permissions as well
+        if not self._validate_plugin_permissions(sinks_dir):
+            logger.error(f"Sinks directory {sinks_dir} has unsafe permissions - refusing to load")
             return
 
         for plugin_file in sinks_dir.glob("*.py"):
