@@ -68,6 +68,11 @@ class Settings(BaseSettings):
     port: int = Field(default=8000)
     worker_id: str = Field(default="cognigate-worker-1")
 
+    # Authentication settings
+    api_key: str = Field(default="", description="API key for REST endpoint authentication")
+    require_auth: bool = Field(default=True, description="Require authentication for REST endpoints")
+    allow_insecure_dev: bool = Field(default=False, description="Allow unauthenticated access (dev only)")
+
     model_config = {"env_prefix": "COGNIGATE_", "env_file": ".env"}
 
     def get_asyncgate_config(self) -> AsyncGateConfig:

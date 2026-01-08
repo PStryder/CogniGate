@@ -4,7 +4,7 @@ import logging
 from contextlib import asynccontextmanager
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Depends
 from pydantic import BaseModel, Field
 
 from .config import Settings, Bootstrap
@@ -15,6 +15,7 @@ from .plugins.builtin_sinks import register_builtin_sinks
 from .ai_client import AIClient
 from .tools import ToolExecutor
 from .executor import JobExecutor
+from .auth import AuthDependency
 
 
 logger = logging.getLogger(__name__)
@@ -31,9 +32,19 @@ class AppState:
     tool_executor: ToolExecutor | None = None
     job_executor: JobExecutor | None = None
     work_poller: WorkPoller | None = None
+    auth_dependency: AuthDependency | None = None
 
 
 state = AppState()
+
+
+def get_auth():
+    """Get auth dependency for protected endpoints."""
+    if state.auth_dependency:
+        return state.auth_dependency
+    async def noop():
+        return True
+    return noop
 
 
 async def job_handler(lease: Lease) -> Receipt:
@@ -51,6 +62,17 @@ async def lifespan(app: FastAPI):
 
     # Load settings
     state.settings = Settings()
+
+    # Initialize auth dependency
+    state.auth_dependency = AuthDependency(state.settings)
+    
+    # Log auth status
+    if state.settings.allow_insecure_dev:
+        logger.warning("Running in INSECURE DEV MODE - authentication disabled")
+    elif state.settings.api_key:
+        logger.info("Authentication enabled: API key configured")
+    else:
+        logger.warning("No COGNIGATE_API_KEY configured - REST endpoints will reject requests")
 
     # Bootstrap configuration
     state.bootstrap = Bootstrap(state.settings)
@@ -178,7 +200,7 @@ async def readiness_check():
     return {"ready": True}
 
 
-@app.post("/v1/jobs", response_model=SubmitJobResponse)
+@app.post("/v1/jobs", response_model=SubmitJobResponse, dependencies=[Depends(get_auth)])
 async def submit_job(request: SubmitJobRequest, background_tasks: BackgroundTasks):
     """Submit a job directly (for testing/local use).
 
@@ -212,7 +234,7 @@ async def submit_job(request: SubmitJobRequest, background_tasks: BackgroundTask
     )
 
 
-@app.post("/v1/polling/start")
+@app.post("/v1/polling/start", dependencies=[Depends(get_auth)])
 async def start_polling(background_tasks: BackgroundTasks):
     """Start polling AsyncGate for work."""
     if not state.work_poller:
@@ -222,7 +244,7 @@ async def start_polling(background_tasks: BackgroundTasks):
     return {"status": "polling_started"}
 
 
-@app.post("/v1/polling/stop")
+@app.post("/v1/polling/stop", dependencies=[Depends(get_auth)])
 async def stop_polling():
     """Stop polling AsyncGate."""
     if state.work_poller:
@@ -230,7 +252,7 @@ async def stop_polling():
     return {"status": "polling_stopped"}
 
 
-@app.get("/v1/config/profiles")
+@app.get("/v1/config/profiles", dependencies=[Depends(get_auth)])
 async def list_profiles():
     """List available instruction profiles."""
     if not state.bootstrap:
@@ -241,7 +263,7 @@ async def list_profiles():
     }
 
 
-@app.get("/v1/config/sinks")
+@app.get("/v1/config/sinks", dependencies=[Depends(get_auth)])
 async def list_sinks():
     """List available output sinks."""
     if not state.sink_registry:
@@ -252,7 +274,7 @@ async def list_sinks():
     }
 
 
-@app.get("/v1/config/mcp")
+@app.get("/v1/config/mcp", dependencies=[Depends(get_auth)])
 async def list_mcp_adapters():
     """List available MCP adapters."""
     if not state.mcp_registry:
