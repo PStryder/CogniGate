@@ -3,7 +3,7 @@
 import asyncio
 import logging
 from datetime import datetime, timezone
-from typing import Callable, Awaitable
+from typing import Callable, Awaitable, Any
 
 import httpx
 
@@ -42,25 +42,36 @@ class AsyncGateClient:
         """
         try:
             response = await self._client.post(
-                f"{self.endpoint}/v1/work/poll",
-                json={"worker_id": self.worker_id},
+                f"{self.endpoint}/v1/leases/claim",
+                json={
+                    "worker_id": self.worker_id,
+                    "max_tasks": 1,
+                },
                 headers=self._headers()
             )
-
-            if response.status_code == 204:
-                # No work available
-                return None
-
             response.raise_for_status()
             data = response.json()
 
+            tasks = data.get("tasks", [])
+            if not tasks:
+                return None
+
+            task = tasks[0]
+            payload = task.get("payload") or {}
+            if not isinstance(payload, dict):
+                payload = {"value": payload}
+
+            constraints = payload.get("constraints", {})
+            if not constraints and isinstance(task.get("requirements"), dict):
+                constraints = task["requirements"]
+
             return Lease(
-                lease_id=data["lease_id"],
-                task_id=data["task_id"],
-                payload=data.get("payload", {}),
-                profile=data.get("profile", "default"),
-                sink_config=data.get("sink_config", {}),
-                constraints=data.get("constraints", {})
+                lease_id=str(task["lease_id"]),
+                task_id=str(task["task_id"]),
+                payload=payload,
+                profile=payload.get("profile", "default"),
+                sink_config=payload.get("sink_config", {}),
+                constraints=constraints,
             )
 
         except httpx.HTTPStatusError as e:
@@ -71,23 +82,17 @@ class AsyncGateClient:
             return None
 
     async def send_receipt(self, receipt: Receipt) -> bool:
-        """Send a receipt to AsyncGate.
-
-        Args:
-            receipt: The receipt to send
-
-        Returns:
-            True if successfully sent, False otherwise
-        """
+        """Send a receipt to AsyncGate using the task state endpoints."""
         try:
-            response = await self._client.post(
-                f"{self.endpoint}/v1/receipts",
-                json=receipt.to_ledger_entry(),
-                headers=self._headers()
-            )
-            response.raise_for_status()
-            logger.info(f"Receipt sent: lease={receipt.lease_id}, status={receipt.status}")
-            return True
+            if receipt.status == JobStatus.RUNNING:
+                return await self._report_progress(receipt)
+            if receipt.status == JobStatus.COMPLETE:
+                return await self._complete_task(receipt)
+            if receipt.status == JobStatus.FAILED:
+                return await self._fail_task(receipt)
+
+            logger.warning(f"Skipping receipt with unsupported status: {receipt.status}")
+            return False
 
         except httpx.HTTPStatusError as e:
             logger.error(f"HTTP error sending receipt: {e.response.status_code}")
@@ -95,6 +100,69 @@ class AsyncGateClient:
         except Exception as e:
             logger.error(f"Error sending receipt: {e}")
             return False
+
+    async def _report_progress(self, receipt: Receipt) -> bool:
+        payload: dict[str, Any] = {
+            "worker_kind": "worker",
+            "worker_id": self.worker_id,
+            "lease_id": receipt.lease_id,
+            "progress": {
+                "status": receipt.status.value,
+                "summary": receipt.summary,
+                "artifact_pointers": receipt.artifact_pointers,
+                "timestamp": receipt.timestamp.isoformat(),
+            },
+        }
+        response = await self._client.post(
+            f"{self.endpoint}/v1/tasks/{receipt.task_id}/progress",
+            json=payload,
+            headers=self._headers(),
+        )
+        response.raise_for_status()
+        logger.info(f"Progress reported: lease={receipt.lease_id}, status={receipt.status}")
+        return True
+
+    async def _complete_task(self, receipt: Receipt) -> bool:
+        payload: dict[str, Any] = {
+            "worker_kind": "worker",
+            "worker_id": self.worker_id,
+            "lease_id": receipt.lease_id,
+            "result": {
+                "summary": receipt.summary,
+                "artifact_pointers": receipt.artifact_pointers,
+            },
+        }
+        if receipt.artifact_pointers:
+            payload["artifacts"] = {"pointers": receipt.artifact_pointers}
+        response = await self._client.post(
+            f"{self.endpoint}/v1/tasks/{receipt.task_id}/complete",
+            json=payload,
+            headers=self._headers(),
+        )
+        response.raise_for_status()
+        logger.info(f"Task completed: lease={receipt.lease_id}, status={receipt.status}")
+        return True
+
+    async def _fail_task(self, receipt: Receipt) -> bool:
+        error_metadata = receipt.error_metadata or {}
+        payload: dict[str, Any] = {
+            "worker_kind": "worker",
+            "worker_id": self.worker_id,
+            "lease_id": receipt.lease_id,
+            "error": {
+                "code": error_metadata.get("code", "JOB_FAILED"),
+                "message": error_metadata.get("message", "Job failed"),
+            },
+            "retryable": False,
+        }
+        response = await self._client.post(
+            f"{self.endpoint}/v1/tasks/{receipt.task_id}/fail",
+            json=payload,
+            headers=self._headers(),
+        )
+        response.raise_for_status()
+        logger.info(f"Task failed: lease={receipt.lease_id}, status={receipt.status}")
+        return True
 
 
 # Type for job handler callback
