@@ -2,9 +2,10 @@
 
 import logging
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Any, Optional
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks, Depends
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Depends, Request, Header
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from .config import Settings, Bootstrap
@@ -16,9 +17,21 @@ from .ai_client import AIClient
 from .tools import ToolExecutor
 from .executor import JobExecutor
 from .auth import AuthDependency
+from .middleware import get_rate_limiter
 
 
 logger = logging.getLogger(__name__)
+
+
+# Rate limiting dependency
+async def rate_limit_dependency(request: Request) -> None:
+    """Rate limiting dependency."""
+    if state.settings:
+        limiter = get_rate_limiter(
+            calls_per_minute=state.settings.rate_limit_requests_per_minute,
+            enabled=state.settings.rate_limit_enabled
+        )
+        await limiter.check_request(request)
 
 
 # Global state (initialized at startup)
@@ -38,13 +51,14 @@ class AppState:
 state = AppState()
 
 
-def get_auth():
-    """Get auth dependency for protected endpoints."""
-    if state.auth_dependency:
-        return state.auth_dependency
-    async def noop():
-        return True
-    return noop
+async def get_auth(
+    authorization: Optional[str] = Header(None),
+    x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
+) -> bool:
+    """Run auth dependency for protected endpoints."""
+    if not state.auth_dependency:
+        raise HTTPException(status_code=503, detail="Auth not initialized")
+    return await state.auth_dependency(authorization=authorization, x_api_key=x_api_key)
 
 
 async def job_handler(lease: Lease) -> Receipt:
@@ -152,10 +166,26 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+# CORS middleware
+# Note: settings will be initialized during lifespan startup
+# Using defaults here; override with environment variables if needed
+from .config import Settings
+_cors_settings = Settings()
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_settings.cors_allowed_origins,
+    allow_credentials=_cors_settings.cors_allow_credentials,
+    allow_methods=_cors_settings.cors_allowed_methods,
+    allow_headers=_cors_settings.cors_allowed_headers,
+)
+
 
 # API Models
 class HealthResponse(BaseModel):
     status: str = Field(description="Service status")
+    service: str = Field(description="Service name")
+    version: str = Field(description="Service version")
+    instance_id: str = Field(description="Instance identifier")
     worker_id: str = Field(description="Worker identifier")
     active_jobs: int = Field(description="Number of active jobs")
 
@@ -187,6 +217,9 @@ async def health_check():
     active_jobs = len(state.work_poller._active_jobs) if state.work_poller else 0
     return HealthResponse(
         status="healthy",
+        service="CogniGate",
+        version="0.1.0",
+        instance_id=state.settings.worker_id if state.settings else "cognigate-1",
         worker_id=state.settings.worker_id if state.settings else "unknown",
         active_jobs=active_jobs
     )
@@ -200,7 +233,7 @@ async def readiness_check():
     return {"ready": True}
 
 
-@app.post("/v1/jobs", response_model=SubmitJobResponse, dependencies=[Depends(get_auth)])
+@app.post("/v1/jobs", response_model=SubmitJobResponse, dependencies=[Depends(get_auth), Depends(rate_limit_dependency)])
 async def submit_job(request: SubmitJobRequest, background_tasks: BackgroundTasks):
     """Submit a job directly (for testing/local use).
 
@@ -234,7 +267,7 @@ async def submit_job(request: SubmitJobRequest, background_tasks: BackgroundTask
     )
 
 
-@app.post("/v1/polling/start", dependencies=[Depends(get_auth)])
+@app.post("/v1/polling/start", dependencies=[Depends(get_auth), Depends(rate_limit_dependency)])
 async def start_polling(background_tasks: BackgroundTasks):
     """Start polling AsyncGate for work."""
     if not state.work_poller:
@@ -244,7 +277,7 @@ async def start_polling(background_tasks: BackgroundTasks):
     return {"status": "polling_started"}
 
 
-@app.post("/v1/polling/stop", dependencies=[Depends(get_auth)])
+@app.post("/v1/polling/stop", dependencies=[Depends(get_auth), Depends(rate_limit_dependency)])
 async def stop_polling():
     """Stop polling AsyncGate."""
     if state.work_poller:
@@ -252,7 +285,7 @@ async def stop_polling():
     return {"status": "polling_stopped"}
 
 
-@app.get("/v1/config/profiles", dependencies=[Depends(get_auth)])
+@app.get("/v1/config/profiles", dependencies=[Depends(get_auth), Depends(rate_limit_dependency)])
 async def list_profiles():
     """List available instruction profiles."""
     if not state.bootstrap:
@@ -263,7 +296,7 @@ async def list_profiles():
     }
 
 
-@app.get("/v1/config/sinks", dependencies=[Depends(get_auth)])
+@app.get("/v1/config/sinks", dependencies=[Depends(get_auth), Depends(rate_limit_dependency)])
 async def list_sinks():
     """List available output sinks."""
     if not state.sink_registry:
@@ -274,7 +307,7 @@ async def list_sinks():
     }
 
 
-@app.get("/v1/config/mcp", dependencies=[Depends(get_auth)])
+@app.get("/v1/config/mcp", dependencies=[Depends(get_auth), Depends(rate_limit_dependency)])
 async def list_mcp_adapters():
     """List available MCP adapters."""
     if not state.mcp_registry:

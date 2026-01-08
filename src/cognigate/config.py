@@ -4,8 +4,8 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import BaseModel, Field
-from pydantic_settings import BaseSettings
+from pydantic import BaseModel, Field, field_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class AsyncGateConfig(BaseModel):
@@ -73,7 +73,69 @@ class Settings(BaseSettings):
     require_auth: bool = Field(default=True, description="Require authentication for REST endpoints")
     allow_insecure_dev: bool = Field(default=False, description="Allow unauthenticated access (dev only)")
 
-    model_config = {"env_prefix": "COGNIGATE_", "env_file": ".env"}
+    # Rate limiting
+    rate_limit_enabled: bool = Field(default=True, description="Enable rate limiting")
+    rate_limit_requests_per_minute: int = Field(default=50, description="Rate limit per minute")
+
+    # CORS configuration (explicit allowlist for security)
+    cors_allowed_origins: list[str] = Field(
+        default=["http://localhost:3000", "http://localhost:8080"],
+        description="Allowed CORS origins (explicit allowlist for security)"
+    )
+    cors_allow_credentials: bool = Field(
+        default=True,
+        description="Allow credentials in CORS requests"
+    )
+    cors_allowed_methods: list[str] = Field(
+        default=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        description="Allowed HTTP methods"
+    )
+    cors_allowed_headers: list[str] = Field(
+        default=["Authorization", "Content-Type", "X-Tenant-ID"],
+        description="Allowed request headers"
+    )
+
+    model_config = SettingsConfigDict(
+        env_prefix="COGNIGATE_",
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+    )
+
+    # Validators
+    @field_validator("port")
+    @classmethod
+    def validate_port(cls, v: int) -> int:
+        """Validate port number range."""
+        if not 1 <= v <= 65535:
+            raise ValueError(f"Port must be between 1 and 65535, got {v}")
+        return v
+
+    @field_validator("asyncgate_endpoint", "ai_endpoint")
+    @classmethod
+    def validate_endpoint_url(cls, v: str) -> str:
+        """Validate endpoint URLs are HTTP(S)."""
+        if not v.startswith(("http://", "https://")):
+            raise ValueError(f"Endpoint URL must start with http:// or https://, got {v}")
+        return v
+
+    @field_validator("ai_api_key")
+    @classmethod
+    def validate_ai_api_key(cls, v: str) -> str:
+        """Validate AI API key is set."""
+        if not v:
+            raise ValueError("ai_api_key is required for CogniGate to function")
+        return v
+
+    @field_validator("api_key")
+    @classmethod
+    def validate_api_key(cls, v: str, info) -> str:
+        """Validate API key is set when auth is required."""
+        require_auth = info.data.get("require_auth", True)
+        allow_insecure = info.data.get("allow_insecure_dev", False)
+        if require_auth and not v and not allow_insecure:
+            raise ValueError("api_key is required when require_auth=True and allow_insecure_dev=False")
+        return v
 
     def get_asyncgate_config(self) -> AsyncGateConfig:
         return AsyncGateConfig(
