@@ -1,6 +1,7 @@
 """REST API for CogniGate."""
 
 import logging
+import os
 from contextlib import asynccontextmanager
 from typing import Any, Optional
 
@@ -166,17 +167,36 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# CORS middleware
-# Note: settings will be initialized during lifespan startup
-# Using defaults here; override with environment variables if needed
-from .config import Settings
-_cors_settings = Settings()
+# CORS middleware (avoid instantiating Settings at import time)
+def _get_cors_list(env_var: str, default: list[str]) -> list[str]:
+    value = os.environ.get(env_var)
+    if not value:
+        return default
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def _get_cors_bool(env_var: str, default: bool) -> bool:
+    value = os.environ.get(env_var)
+    if value is None:
+        return default
+    return value.strip().lower() in ("1", "true", "yes", "on")
+
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=_cors_settings.cors_allowed_origins,
-    allow_credentials=_cors_settings.cors_allow_credentials,
-    allow_methods=_cors_settings.cors_allowed_methods,
-    allow_headers=_cors_settings.cors_allowed_headers,
+    allow_origins=_get_cors_list(
+        "COGNIGATE_CORS_ALLOWED_ORIGINS",
+        ["http://localhost:3000", "http://localhost:8080"],
+    ),
+    allow_credentials=_get_cors_bool("COGNIGATE_CORS_ALLOW_CREDENTIALS", True),
+    allow_methods=_get_cors_list(
+        "COGNIGATE_CORS_ALLOWED_METHODS",
+        ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    ),
+    allow_headers=_get_cors_list(
+        "COGNIGATE_CORS_ALLOWED_HEADERS",
+        ["Authorization", "Content-Type", "X-Tenant-ID"],
+    ),
 )
 
 
