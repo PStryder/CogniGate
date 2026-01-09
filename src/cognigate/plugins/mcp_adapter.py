@@ -1,15 +1,17 @@
 """MCP (Model Context Protocol) adapter for CogniGate."""
 
-import logging
 from typing import Any
 
 import httpx
 from pydantic import BaseModel, Field
 
 from ..config import MCPEndpoint
+from ..observability import get_logger
+from ..metrics import track_mcp_call
+from ..circuit_breaker import CircuitBreaker, CircuitBreakerError
 
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class MCPRequest(BaseModel):
@@ -52,7 +54,9 @@ class MCPAdapter:
         self,
         endpoint: MCPEndpoint,
         http_client: httpx.AsyncClient | None = None,
-        max_retries: int = 3
+        max_retries: int = 3,
+        failure_threshold: int = 5,
+        recovery_timeout: float = 60.0
     ):
         self.endpoint = endpoint
         self.name = endpoint.name
@@ -60,6 +64,11 @@ class MCPAdapter:
         self.max_retries = max_retries
         self._client = http_client or httpx.AsyncClient(timeout=30.0)
         self._owns_client = http_client is None
+        self._circuit_breaker = CircuitBreaker(
+            name=f"mcp_{endpoint.name}",
+            failure_threshold=failure_threshold,
+            recovery_timeout=recovery_timeout
+        )
 
     async def close(self) -> None:
         """Close the HTTP client if we own it."""
@@ -89,6 +98,24 @@ class MCPAdapter:
                 error_code="PERMISSION_DENIED"
             )
 
+        try:
+            return await self._circuit_breaker.call(
+                self._do_call, request
+            )
+        except CircuitBreakerError as e:
+            logger.warning(
+                "mcp_circuit_open",
+                server=self.name,
+                method=request.method
+            )
+            return MCPResponse(
+                success=False,
+                error=str(e),
+                error_code="CIRCUIT_OPEN"
+            )
+
+    async def _do_call(self, request: MCPRequest) -> MCPResponse:
+        """Internal method to perform MCP call (for circuit breaker)."""
         headers = {"Content-Type": "application/json"}
         if self.endpoint.auth_token:
             headers["Authorization"] = f"Bearer {self.endpoint.auth_token}"
@@ -103,12 +130,13 @@ class MCPAdapter:
         last_error = None
         for attempt in range(self.max_retries):
             try:
-                response = await self._client.post(
-                    self.endpoint.endpoint,
-                    json=payload,
-                    headers=headers
-                )
-                response.raise_for_status()
+                with track_mcp_call(self.name, request.method):
+                    response = await self._client.post(
+                        self.endpoint.endpoint,
+                        json=payload,
+                        headers=headers
+                    )
+                    response.raise_for_status()
 
                 data = response.json()
 
@@ -127,20 +155,31 @@ class MCPAdapter:
 
             except httpx.HTTPStatusError as e:
                 last_error = f"HTTP {e.response.status_code}: {e.response.text}"
-                logger.warning(f"MCP call attempt {attempt + 1} failed: {last_error}")
+                logger.warning(
+                    "mcp_call_failed",
+                    server=self.name,
+                    attempt=attempt + 1,
+                    error=last_error
+                )
             except httpx.RequestError as e:
                 last_error = str(e)
-                logger.warning(f"MCP call attempt {attempt + 1} failed: {last_error}")
+                logger.warning(
+                    "mcp_call_failed",
+                    server=self.name,
+                    attempt=attempt + 1,
+                    error=last_error
+                )
             except Exception as e:
                 last_error = str(e)
-                logger.error(f"Unexpected error in MCP call: {last_error}")
+                logger.error(
+                    "mcp_call_unexpected_error",
+                    server=self.name,
+                    error=last_error
+                )
                 break
 
-        return MCPResponse(
-            success=False,
-            error=last_error or "Unknown error after retries",
-            error_code="REQUEST_FAILED"
-        )
+        # All retries failed - raise to trigger circuit breaker
+        raise httpx.RequestError(last_error or "Unknown error after retries")
 
 
 class MCPAdapterRegistry:
