@@ -1,0 +1,141 @@
+---
+# ServiceMonitor for Prometheus Operator
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: cognigate
+  namespace: cognigate
+  labels:
+    app.kubernetes.io/name: cognigate
+    app.kubernetes.io/component: monitoring
+    # Match your Prometheus Operator's serviceMonitorSelector
+    release: prometheus
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: cognigate
+      app.kubernetes.io/component: worker
+  namespaceSelector:
+    matchNames:
+      - cognigate
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 30s
+      scrapeTimeout: 10s
+      honorLabels: true
+      relabelings:
+        - sourceLabels: [__meta_kubernetes_pod_name]
+          targetLabel: pod
+        - sourceLabels: [__meta_kubernetes_namespace]
+          targetLabel: namespace
+        - sourceLabels: [__meta_kubernetes_pod_node_name]
+          targetLabel: node
+---
+# PrometheusRule for alerting
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: cognigate-alerts
+  namespace: cognigate
+  labels:
+    app.kubernetes.io/name: cognigate
+    app.kubernetes.io/component: monitoring
+    release: prometheus
+spec:
+  groups:
+    - name: cognigate.rules
+      interval: 30s
+      rules:
+        # High job failure rate
+        - alert: CogniGateHighJobFailureRate
+          expr: |
+            (
+              sum(rate(cognigate_jobs_total{status="failed"}[5m]))
+              /
+              sum(rate(cognigate_jobs_total[5m]))
+            ) > 0.1
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "High job failure rate in CogniGate"
+            description: "Job failure rate is {{ $value | humanizePercentage }} over the last 5 minutes"
+
+        # Circuit breaker open
+        - alert: CogniGateCircuitBreakerOpen
+          expr: cognigate_circuit_breaker_state{state="open"} == 1
+          for: 1m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Circuit breaker open for {{ $labels.name }}"
+            description: "Circuit breaker {{ $labels.name }} is open, indicating repeated failures"
+
+        # Dead letter queue growing
+        - alert: CogniGateDLQGrowing
+          expr: cognigate_dead_letter_queue_size > 10
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Dead letter queue is growing"
+            description: "DLQ has {{ $value }} failed receipts waiting for retry"
+
+        # No jobs being processed
+        - alert: CogniGateNoJobsProcessed
+          expr: |
+            sum(rate(cognigate_jobs_total[10m])) == 0
+            and
+            sum(cognigate_active_jobs) == 0
+          for: 30m
+          labels:
+            severity: info
+          annotations:
+            summary: "No jobs processed in CogniGate"
+            description: "No jobs have been processed in the last 30 minutes. Check if this is expected."
+
+        # High job duration
+        - alert: CogniGateSlowJobs
+          expr: |
+            histogram_quantile(0.95, sum(rate(cognigate_job_duration_seconds_bucket[5m])) by (le, profile)) > 120
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Jobs are taking longer than expected"
+            description: "95th percentile job duration for profile {{ $labels.profile }} is {{ $value | humanizeDuration }}"
+
+        # AI provider errors
+        - alert: CogniGateAIProviderErrors
+          expr: |
+            sum(rate(cognigate_ai_requests_total{status="error"}[5m]))
+            /
+            sum(rate(cognigate_ai_requests_total[5m])) > 0.05
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "High AI provider error rate"
+            description: "AI provider error rate is {{ $value | humanizePercentage }}"
+
+        # Pod restarts
+        - alert: CogniGatePodRestarts
+          expr: |
+            increase(kube_pod_container_status_restarts_total{namespace="cognigate", container="cognigate"}[1h]) > 3
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "CogniGate pod restarting frequently"
+            description: "Pod {{ $labels.pod }} has restarted {{ $value }} times in the last hour"
+
+        # Instance down
+        - alert: CogniGateInstanceDown
+          expr: up{job="cognigate"} == 0
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: "CogniGate instance is down"
+            description: "CogniGate instance {{ $labels.instance }} has been down for more than 2 minutes"

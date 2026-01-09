@@ -1,0 +1,8 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cognigate
+  labels:
+    app.kubernetes.io/name: cognigate
+    app.kubernetes.io/part-of: lv-stack
