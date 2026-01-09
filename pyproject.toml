@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cognigate"
-version = "0.1.0"
+version = "0.2.0"
 description = "A general-purpose cognitive execution worker"
 readme = "README.md"
 requires-python = ">=3.11"

@@ -1,0 +1,47 @@
+version: '3.8'
+
+services:
+  cognigate:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      # Standalone mode configuration
+      - COGNIGATE_STANDALONE_MODE=true
+      - COGNIGATE_RECEIPT_STORAGE_DIR=/var/lib/cognigate/receipts
+      
+      # AI Provider (required)
+      - COGNIGATE_AI_ENDPOINT=${AI_ENDPOINT:-https://openrouter.ai/api/v1}
+      - COGNIGATE_AI_API_KEY=${AI_API_KEY}
+      - COGNIGATE_AI_MODEL=${AI_MODEL:-anthropic/claude-sonnet-4-20250514}
+      - COGNIGATE_AI_MAX_TOKENS=${AI_MAX_TOKENS:-4096}
+      
+      # Authentication (required for production)
+      - COGNIGATE_API_KEY=${API_KEY}
+      - COGNIGATE_REQUIRE_AUTH=${REQUIRE_AUTH:-true}
+      
+      # Worker configuration
+      - COGNIGATE_WORKER_ID=cognigate-standalone-1
+      - COGNIGATE_MAX_CONCURRENT_JOBS=${MAX_CONCURRENT_JOBS:-1}
+      - COGNIGATE_JOB_TIMEOUT=${JOB_TIMEOUT:-300}
+      - COGNIGATE_MAX_RETRIES=${MAX_RETRIES:-3}
+      
+      # Logging
+      - COGNIGATE_LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - COGNIGATE_JSON_LOGS=${JSON_LOGS:-true}
+    volumes:
+      # Mount config directory for profiles and plugins
+      - ./config:/etc/cognigate:ro
+      # Persist receipt storage
+      - receipts:/var/lib/cognigate/receipts
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+
+volumes:
+  receipts:
+    driver: local

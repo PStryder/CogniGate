@@ -18,6 +18,7 @@ from .ai_client import AIClient
 from .tools import ToolExecutor
 from .executor import JobExecutor
 from .auth import AuthDependency
+from .receipts import ReceiptStore
 from .middleware import get_rate_limiter
 from .observability import configure_logging, get_logger, JobContext
 from .metrics import (
@@ -54,6 +55,7 @@ class AppState:
     job_executor: JobExecutor | None = None
     work_poller: WorkPoller | None = None
     auth_dependency: AuthDependency | None = None
+    receipt_store: ReceiptStore | None = None
 
 
 state = AppState()
@@ -131,9 +133,6 @@ async def lifespan(app: FastAPI):
     # Initialize AI client
     state.ai_client = AIClient(state.settings.get_ai_config())
 
-    # Initialize AsyncGate client
-    state.asyncgate_client = AsyncGateClient(state.settings)
-
     # Initialize tool executor
     state.tool_executor = ToolExecutor(
         state.mcp_registry,
@@ -149,12 +148,24 @@ async def lifespan(app: FastAPI):
         state.settings
     )
 
-    # Initialize work poller
-    state.work_poller = WorkPoller(
-        state.asyncgate_client,
-        state.settings,
-        job_handler
-    )
+    # Initialize AsyncGate client and work poller (optional in standalone mode)
+    if not state.settings.standalone_mode:
+        state.asyncgate_client = AsyncGateClient(state.settings)
+        state.work_poller = WorkPoller(
+            state.asyncgate_client,
+            state.settings,
+            job_handler
+        )
+        logger.info("AsyncGate polling initialized")
+    else:
+        state.asyncgate_client = None
+        state.work_poller = None
+        logger.info("Running in standalone mode - polling disabled")
+
+    # Receipt storage (standalone mode)
+    if state.settings.standalone_mode:
+        state.receipt_store = ReceiptStore(state.settings.receipt_storage_dir)
+        logger.info(f"Receipt storage enabled: {state.settings.receipt_storage_dir}")
 
     logger.info("cognigate_started", event="startup_complete")
 
@@ -228,6 +239,7 @@ class HealthResponse(BaseModel):
     instance_id: str = Field(description="Instance identifier")
     worker_id: str = Field(description="Worker identifier")
     active_jobs: int = Field(description="Number of active jobs")
+    mode: str = Field(description="Operation mode (standalone or asyncgate)")
 
 
 class SubmitJobRequest(BaseModel):
@@ -326,13 +338,15 @@ async def check_mcp_adapters_health() -> dict:
 async def health_check():
     """Basic health check endpoint (for load balancers)."""
     active_jobs = len(state.work_poller._active_jobs) if state.work_poller else 0
+    mode = "standalone" if state.settings and state.settings.standalone_mode else "asyncgate"
     return HealthResponse(
         status="healthy",
         service="CogniGate",
-        version="0.1.0",
+        version="0.2.0",
         instance_id=state.settings.worker_id if state.settings else "cognigate-1",
         worker_id=state.settings.worker_id if state.settings else "unknown",
-        active_jobs=active_jobs
+        active_jobs=active_jobs,
+        mode=mode
     )
 
 
@@ -366,11 +380,15 @@ async def detailed_health_check():
         "mcp_adapters": mcp_checks
     }
 
-    # Determine overall health
-    core_healthy = (
-        asyncgate_check.get("healthy", False) and
-        ai_check.get("healthy", False)
-    )
+    # Determine overall health (AsyncGate not required in standalone mode)
+    standalone = state.settings.standalone_mode if state.settings else False
+    if standalone:
+        core_healthy = ai_check.get("healthy", False)
+    else:
+        core_healthy = (
+            asyncgate_check.get("healthy", False) and
+            ai_check.get("healthy", False)
+        )
 
     # Check if any MCP adapter is unhealthy
     mcp_healthy = all(
@@ -395,7 +413,9 @@ async def detailed_health_check():
         "state": {
             "active_jobs": active_jobs,
             "shutting_down": shutting_down,
-            "polling": state.work_poller._running if state.work_poller else False
+            "polling": state.work_poller._running if state.work_poller else False,
+            "standalone_mode": state.settings.standalone_mode if state.settings else False,
+            "receipt_storage_enabled": state.receipt_store is not None
         },
         "check_duration_ms": round(elapsed_ms, 2)
     }
@@ -428,6 +448,41 @@ async def metrics_endpoint():
         content=get_metrics(),
         media_type=get_metrics_content_type()
     )
+
+
+@app.post(
+    "/v1/jobs/execute",
+    response_model=Receipt,
+    dependencies=[Depends(get_auth), Depends(rate_limit_dependency)]
+)
+async def execute_job_sync(request: SubmitJobRequest):
+    """Execute a job synchronously and return the receipt.
+    
+    This endpoint is designed for standalone mode where CogniGate
+    acts as a direct cognitive worker without AsyncGate leasing.
+    """
+    if not state.job_executor:
+        raise HTTPException(status_code=503, detail="Not ready")
+
+    import uuid
+
+    lease = Lease(
+        lease_id=str(uuid.uuid4()),
+        task_id=request.task_id,
+        payload=request.payload,
+        profile=request.profile,
+        sink_config=request.sink_config,
+        constraints=request.constraints
+    )
+
+    # Execute synchronously
+    receipt = await state.job_executor.execute(lease)
+    
+    # Save receipt if storage enabled
+    if state.receipt_store:
+        state.receipt_store.save(receipt)
+    
+    return receipt
 
 
 @app.post("/v1/jobs", response_model=SubmitJobResponse, dependencies=[Depends(get_auth), Depends(rate_limit_dependency)])
@@ -539,3 +594,38 @@ async def list_mcp_adapters():
     return {
         "adapters": state.mcp_registry.list_adapters()
     }
+
+
+@app.get(
+    "/v1/receipts/{lease_id}",
+    response_model=Receipt,
+    dependencies=[Depends(get_auth), Depends(rate_limit_dependency)]
+)
+async def get_receipt(lease_id: str):
+    """Get receipt for a specific lease."""
+    if not state.receipt_store:
+        raise HTTPException(
+            status_code=503,
+            detail="Receipt storage not enabled (set standalone_mode=true)"
+        )
+    
+    receipt = state.receipt_store.get(lease_id)
+    if not receipt:
+        raise HTTPException(status_code=404, detail="Receipt not found")
+    
+    return receipt
+
+
+@app.get(
+    "/v1/receipts",
+    dependencies=[Depends(get_auth), Depends(rate_limit_dependency)]
+)
+async def list_receipts(limit: int = 100):
+    """List recent receipts."""
+    if not state.receipt_store:
+        raise HTTPException(
+            status_code=503,
+            detail="Receipt storage not enabled (set standalone_mode=true)"
+        )
+    
+    return {"receipts": state.receipt_store.list(limit)}

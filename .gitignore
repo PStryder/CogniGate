@@ -57,3 +57,7 @@ output/
 # Logs
 *.log
 logs/
+
+# Receipt storage (standalone mode)
+receipts/
+*.receipt.json

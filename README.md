@@ -55,6 +55,8 @@ Environment variables (prefix `COGNIGATE_`):
 
 | Variable | Default | Description |
 |----------|---------|-------------|
+| `STANDALONE_MODE` | true | Run without AsyncGate (default for GP use) |
+| `RECEIPT_STORAGE_DIR` | ./receipts | Directory for receipt storage |
 | `ASYNCGATE_ENDPOINT` | http://localhost:8080 | AsyncGate API endpoint |
 | `ASYNCGATE_AUTH_TOKEN` | - | Authentication token for AsyncGate |
 | `AI_ENDPOINT` | https://openrouter.ai/api/v1 | AI provider endpoint |
@@ -79,6 +81,68 @@ Environment variables (prefix `COGNIGATE_`):
 uvicorn cognigate.api:app --host 0.0.0.0 --port 8000
 ```
 
+## Standalone Mode
+
+CogniGate can run in standalone mode as a general-purpose cognitive worker without requiring AsyncGate for job leasing. In this mode, jobs are submitted directly via REST API and receipts are stored locally.
+
+### When to Use Standalone Mode
+
+- Direct integration with other systems via REST API
+- Development and testing without AsyncGate
+- Standalone deployment scenarios
+- Simple single-worker setups
+
+### Configuration
+
+1. Copy the standalone example configuration:
+   ```bash
+   cp .env.standalone.example .env
+   ```
+
+2. Configure your AI provider credentials:
+   ```bash
+   COGNIGATE_AI_API_KEY=your-openrouter-api-key
+   COGNIGATE_API_KEY=cg_your-secret-api-key
+   ```
+
+3. Start in standalone mode:
+   ```bash
+   COGNIGATE_STANDALONE_MODE=true uvicorn cognigate.api:app --host 0.0.0.0 --port 8000
+   ```
+
+### Usage
+
+Submit a job and get the result synchronously:
+
+```bash
+curl -X POST "http://localhost:8000/v1/jobs/execute"   -H "X-API-Key: cg_your-secret-api-key"   -H "Content-Type: application/json"   -d '{
+    "task_id": "example-001",
+    "payload": {
+      "instruction": "Summarize the key points of this text",
+      "context": "Your input text here..."
+    },
+    "profile": "default"
+  }'
+```
+
+Retrieve a previous receipt:
+
+```bash
+curl "http://localhost:8000/v1/receipts/{lease_id}"   -H "X-API-Key: cg_your-secret-api-key"
+```
+
+List all receipts:
+
+```bash
+curl "http://localhost:8000/v1/receipts"   -H "X-API-Key: cg_your-secret-api-key"
+```
+
+### Docker Standalone
+
+```bash
+docker-compose -f docker-compose.standalone.yml up
+```
+
 ## API
 
 ### Endpoints
@@ -86,8 +150,15 @@ uvicorn cognigate.api:app --host 0.0.0.0 --port 8000
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/health` | GET | Health check endpoint |
+| `/health/detailed` | GET | Detailed health with component status |
 | `/ready` | GET | Readiness check for Kubernetes |
-| `/v1/jobs` | POST | Submit a job directly (testing/local use) |
+| `/live` | GET | Liveness check for Kubernetes |
+| `/metrics` | GET | Prometheus metrics |
+| `/v1/jobs/execute` | POST | Execute job synchronously (standalone mode) |
+| `/v1/jobs` | POST | Submit a job (async, background execution) |
+| `/v1/jobs/{lease_id}/cancel` | POST | Cancel a running job |
+| `/v1/receipts` | GET | List recent receipts (standalone mode) |
+| `/v1/receipts/{lease_id}` | GET | Get specific receipt (standalone mode) |
 | `/v1/polling/start` | POST | Start polling AsyncGate for work |
 | `/v1/polling/stop` | POST | Stop polling AsyncGate |
 | `/v1/config/profiles` | GET | List available instruction profiles |

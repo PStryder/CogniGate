@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, ValidationInfo
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -42,7 +42,14 @@ class WorkerConfig(BaseModel):
 class Settings(BaseSettings):
     """Main application settings loaded from environment."""
 
-    # AsyncGate settings
+    # Standalone mode (disables AsyncGate polling, enables receipt storage)
+    standalone_mode: bool = Field(default=True, description="Run in standalone mode without AsyncGate")
+    receipt_storage_dir: Path = Field(
+        default=Path("./receipts"),
+        description="Directory for receipt storage (standalone mode)"
+    )
+
+    # AsyncGate settings (optional in standalone mode)
     asyncgate_endpoint: str = Field(default="http://localhost:8080")
     asyncgate_auth_token: str = Field(default="")
 
@@ -111,10 +118,28 @@ class Settings(BaseSettings):
             raise ValueError(f"Port must be between 1 and 65535, got {v}")
         return v
 
-    @field_validator("asyncgate_endpoint", "ai_endpoint")
+    @field_validator("asyncgate_endpoint")
     @classmethod
-    def validate_endpoint_url(cls, v: str) -> str:
-        """Validate endpoint URLs are HTTP(S)."""
+    def validate_asyncgate_endpoint(cls, v: str, info: ValidationInfo) -> str:
+        """Validate AsyncGate endpoint URL (optional in standalone mode)."""
+        standalone = info.data.get("standalone_mode", True)
+        if not standalone and v and not v.startswith(("http://", "https://")):
+            raise ValueError(f"Endpoint URL must start with http:// or https://, got {v}")
+        return v
+
+    @field_validator("asyncgate_auth_token")
+    @classmethod
+    def validate_asyncgate_auth_token(cls, v: str, info: ValidationInfo) -> str:
+        """Allow empty AsyncGate auth token in standalone mode."""
+        standalone = info.data.get("standalone_mode", True)
+        if not standalone and not v:
+            raise ValueError("asyncgate_auth_token required unless standalone_mode=true")
+        return v
+
+    @field_validator("ai_endpoint")
+    @classmethod
+    def validate_ai_endpoint(cls, v: str) -> str:
+        """Validate AI endpoint URL."""
         if not v.startswith(("http://", "https://")):
             raise ValueError(f"Endpoint URL must start with http:// or https://, got {v}")
         return v
@@ -129,7 +154,7 @@ class Settings(BaseSettings):
 
     @field_validator("api_key")
     @classmethod
-    def validate_api_key(cls, v: str, info) -> str:
+    def validate_api_key(cls, v: str, info: ValidationInfo) -> str:
         """Validate API key is set when auth is required."""
         require_auth = info.data.get("require_auth", True)
         allow_insecure = info.data.get("allow_insecure_dev", False)
