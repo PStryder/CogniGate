@@ -2,10 +2,15 @@
 
 from pathlib import Path
 from typing import Any
+import logging
+import os
 
 import yaml
 from pydantic import BaseModel, Field, field_validator, ValidationInfo
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+logger = logging.getLogger(__name__)
 
 
 class AsyncGateConfig(BaseModel):
@@ -52,6 +57,15 @@ class Settings(BaseSettings):
     # AsyncGate settings (optional in standalone mode)
     asyncgate_endpoint: str = Field(default="http://localhost:8080")
     asyncgate_auth_token: str = Field(default="")
+    asyncgate_tenant_id: str = Field(default="default", description="AsyncGate tenant identifier")
+
+    # ReceiptGate settings (optional)
+    receiptgate_endpoint: str = Field(default="", description="ReceiptGate MCP endpoint")
+    receiptgate_auth_token: str = Field(default="", description="Auth token for ReceiptGate")
+    receiptgate_emit_receipts: bool = Field(
+        default=True,
+        description="Emit LegiVellum receipts to ReceiptGate",
+    )
 
     # AI provider settings
     ai_endpoint: str = Field(default="https://openrouter.ai/api/v1")
@@ -125,6 +139,14 @@ class Settings(BaseSettings):
         standalone = info.data.get("standalone_mode", True)
         if not standalone and v and not v.startswith(("http://", "https://")):
             raise ValueError(f"Endpoint URL must start with http:// or https://, got {v}")
+        return v
+
+    @field_validator("receiptgate_endpoint")
+    @classmethod
+    def validate_receiptgate_endpoint(cls, v: str, info: ValidationInfo) -> str:
+        """Validate ReceiptGate endpoint if provided."""
+        if v and not v.startswith(("http://", "https://")):
+            raise ValueError(f"receiptgate_endpoint must start with http:// or https://, got {v}")
         return v
 
     @field_validator("asyncgate_auth_token")
@@ -207,7 +229,22 @@ def load_mcp_endpoints(config_path: Path) -> list[MCPEndpoint]:
         return []
     with open(config_path, "r", encoding="utf-8") as f:
         data = yaml.safe_load(f)
+    data = _expand_env_vars(data)
     return [MCPEndpoint(**ep) for ep in data.get("mcp_endpoints", [])]
+
+
+def _expand_env_vars(value: Any) -> Any:
+    """Recursively expand environment variables in config values."""
+    if isinstance(value, str):
+        expanded = os.path.expandvars(value)
+        if "${" in expanded:
+            logger.warning("Unresolved environment variable in config value: %s", value)
+        return expanded
+    if isinstance(value, list):
+        return [_expand_env_vars(item) for item in value]
+    if isinstance(value, dict):
+        return {k: _expand_env_vars(v) for k, v in value.items()}
+    return value
 
 
 class Bootstrap:

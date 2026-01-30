@@ -9,6 +9,8 @@ from typing import Callable, Awaitable, Any
 import httpx
 
 from .config import Settings
+from .legivellum_receipts import build_receipt
+from .receiptgate_client import ReceiptGateClient
 from .models import Lease, Receipt, JobStatus
 from .observability import get_logger
 from .metrics import (
@@ -22,6 +24,13 @@ from .metrics import (
 
 
 logger = get_logger(__name__)
+
+
+def _normalize_mcp_endpoint(endpoint: str) -> str:
+    endpoint = (endpoint or "").rstrip("/")
+    if endpoint and not endpoint.endswith("/mcp"):
+        endpoint = f"{endpoint}/mcp"
+    return endpoint
 
 
 class DeadLetterQueue:
@@ -124,9 +133,10 @@ class AsyncGateClient:
         max_receipt_retries: int = 5,
         backoff_base: float = 2.0
     ):
-        self.endpoint = settings.asyncgate_endpoint
+        self.endpoint = _normalize_mcp_endpoint(settings.asyncgate_endpoint)
         self.auth_token = settings.asyncgate_auth_token
         self.worker_id = settings.worker_id
+        self.tenant_id = settings.asyncgate_tenant_id
         self._client = httpx.AsyncClient(timeout=30.0)
         self._dead_letter_queue = dead_letter_queue or DeadLetterQueue()
         self._max_receipt_retries = max_receipt_retries
@@ -143,6 +153,27 @@ class AsyncGateClient:
             headers["Authorization"] = f"Bearer {self.auth_token}"
         return headers
 
+    async def _mcp_call(self, tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        payload = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": tool,
+                "arguments": arguments,
+            },
+        }
+        response = await self._client.post(self.endpoint, json=payload, headers=self._headers())
+        response.raise_for_status()
+        data = response.json()
+        if "error" in data:
+            raise httpx.HTTPStatusError(
+                f"MCP tool error: {data['error']}",
+                request=response.request,
+                response=response,
+            )
+        return data.get("result", {})
+
     async def poll_for_work(self) -> Lease | None:
         """Poll AsyncGate for available work.
 
@@ -150,16 +181,14 @@ class AsyncGateClient:
             A Lease if work is available, None otherwise.
         """
         try:
-            response = await self._client.post(
-                f"{self.endpoint}/v1/leases/claim",
-                json={
+            data = await self._mcp_call(
+                "asyncgate.lease_next",
+                {
                     "worker_id": self.worker_id,
                     "max_tasks": 1,
+                    "tenant_id": self.tenant_id,
                 },
-                headers=self._headers()
             )
-            response.raise_for_status()
-            data = response.json()
 
             tasks = data.get("tasks", [])
             if not tasks:
@@ -170,6 +199,10 @@ class AsyncGateClient:
             if not isinstance(payload, dict):
                 payload = {"value": payload}
 
+            caused_by_receipt_id = task.get("caused_by_receipt_id")
+            if not caused_by_receipt_id:
+                caused_by_receipt_id = payload.get("caused_by_receipt_id")
+
             constraints = payload.get("constraints", {})
             if not constraints and isinstance(task.get("requirements"), dict):
                 constraints = task["requirements"]
@@ -177,7 +210,14 @@ class AsyncGateClient:
             return Lease(
                 lease_id=str(task["lease_id"]),
                 task_id=str(task["task_id"]),
+                caused_by_receipt_id=caused_by_receipt_id,
                 payload=payload,
+                payload_pointer=task.get("payload_pointer"),
+                principal_ai=task.get("principal_ai"),
+                tenant_id=task.get("tenant_id"),
+                task_type=task.get("type"),
+                expected_outcome_kind=task.get("expected_outcome_kind"),
+                expected_artifact_mime=task.get("expected_artifact_mime"),
                 profile=payload.get("profile", "default"),
                 sink_config=payload.get("sink_config", {}),
                 constraints=constraints,
@@ -317,85 +357,85 @@ class AsyncGateClient:
         return False
 
     async def _report_progress(self, receipt: Receipt) -> bool:
-        payload: dict[str, Any] = {
-            "worker_kind": "worker",
-            "worker_id": self.worker_id,
-            "lease_id": receipt.lease_id,
-            "progress": {
-                "status": receipt.status.value,
-                "summary": receipt.summary,
-                "artifact_pointers": receipt.artifact_pointers,
-                "timestamp": receipt.timestamp.isoformat(),
+        await self._mcp_call(
+            "asyncgate.report_progress",
+            {
+                "worker_id": self.worker_id,
+                "task_id": receipt.task_id,
+                "lease_id": receipt.lease_id,
+                "progress": {
+                    "status": receipt.status.value,
+                    "summary": receipt.summary,
+                    "artifact_pointers": receipt.artifact_pointers,
+                    "timestamp": receipt.timestamp.isoformat(),
+                },
+                "tenant_id": self.tenant_id,
             },
-        }
-        response = await self._client.post(
-            f"{self.endpoint}/v1/tasks/{receipt.task_id}/progress",
-            json=payload,
-            headers=self._headers(),
         )
-        response.raise_for_status()
         logger.info(f"Progress reported: lease={receipt.lease_id}, status={receipt.status}")
         return True
 
     async def _complete_task(self, receipt: Receipt) -> bool:
-        payload: dict[str, Any] = {
-            "worker_kind": "worker",
-            "worker_id": self.worker_id,
-            "lease_id": receipt.lease_id,
-            "result": {
-                "summary": receipt.summary,
-                "artifact_pointers": receipt.artifact_pointers,
-            },
+        result_payload: dict[str, Any] = {
+            "summary": receipt.summary,
+            "artifact_pointers": receipt.artifact_pointers,
         }
-        if receipt.artifact_pointers:
-            payload["artifacts"] = {"pointers": receipt.artifact_pointers}
-        response = await self._client.post(
-            f"{self.endpoint}/v1/tasks/{receipt.task_id}/complete",
-            json=payload,
-            headers=self._headers(),
+        await self._mcp_call(
+            "asyncgate.complete",
+            {
+                "worker_id": self.worker_id,
+                "task_id": receipt.task_id,
+                "lease_id": receipt.lease_id,
+                "result": result_payload,
+                "artifacts": {"pointers": receipt.artifact_pointers} if receipt.artifact_pointers else None,
+                "tenant_id": self.tenant_id,
+            },
         )
-        response.raise_for_status()
         logger.info(f"Task completed: lease={receipt.lease_id}, status={receipt.status}")
         return True
 
     async def _fail_task(self, receipt: Receipt) -> bool:
         error_metadata = receipt.error_metadata or {}
-        payload: dict[str, Any] = {
-            "worker_kind": "worker",
-            "worker_id": self.worker_id,
-            "lease_id": receipt.lease_id,
-            "error": {
-                "code": error_metadata.get("code", "JOB_FAILED"),
-                "message": error_metadata.get("message", "Job failed"),
+        await self._mcp_call(
+            "asyncgate.fail",
+            {
+                "worker_id": self.worker_id,
+                "task_id": receipt.task_id,
+                "lease_id": receipt.lease_id,
+                "error": {
+                    "code": error_metadata.get("code", "JOB_FAILED"),
+                    "message": error_metadata.get("message", "Job failed"),
+                },
+                "retryable": False,
+                "tenant_id": self.tenant_id,
             },
-            "retryable": False,
-        }
-        response = await self._client.post(
-            f"{self.endpoint}/v1/tasks/{receipt.task_id}/fail",
-            json=payload,
-            headers=self._headers(),
         )
-        response.raise_for_status()
         logger.info(f"Task failed: lease={receipt.lease_id}, status={receipt.status}")
         return True
 
-    async def extend_lease(self, lease_id: str) -> bool:
+    async def extend_lease(self, lease: Lease) -> bool:
         """Extend a lease's timeout.
 
         Args:
-            lease_id: The lease ID to extend
+            lease: The lease to extend
 
         Returns:
             True if extension was successful, False otherwise
         """
         try:
-            response = await self._client.post(
-                f"{self.endpoint}/v1/leases/{lease_id}/extend",
-                headers=self._headers()
+            await self._mcp_call(
+                "asyncgate.renew_lease",
+                {
+                    "worker_id": self.worker_id,
+                    "task_id": lease.task_id,
+                    "lease_id": lease.lease_id,
+                    "extend_by_seconds": None,
+                    "tenant_id": self.tenant_id,
+                },
             )
-            return response.status_code == 200
+            return True
         except Exception as e:
-            logger.error(f"Error extending lease {lease_id}: {e}")
+            logger.error(f"Error extending lease {lease.lease_id}: {e}")
             return False
 
 
@@ -419,6 +459,7 @@ class WorkPoller:
         self.polling_interval = settings.polling_interval
         self.max_concurrent = settings.max_concurrent_jobs
         self.heartbeat_interval = heartbeat_interval
+        self._receiptgate_client = ReceiptGateClient(settings)
         self._running = False
         self._shutting_down = False
         self._active_jobs: set[str] = set()
@@ -452,6 +493,7 @@ class WorkPoller:
         """Stop the polling loop immediately."""
         logger.info("work_poller_stopping")
         self._running = False
+        await self._receiptgate_client.close()
 
     async def stop_gracefully(self, timeout: float = 300.0) -> None:
         """Stop the polling loop and wait for active jobs to complete.
@@ -488,6 +530,8 @@ class WorkPoller:
             )
             # Send failure receipts for timed-out jobs
             await self._send_timeout_receipts()
+        finally:
+            await self._receiptgate_client.close()
 
     async def _wait_for_jobs_completion(self) -> None:
         """Wait for all active jobs to complete."""
@@ -512,12 +556,36 @@ class WorkPoller:
                     except asyncio.CancelledError:
                         pass
 
-            # We don't have the full lease info here, so we can't send a proper receipt
-            # The job handler should handle this case
-            logger.error(
-                "job_timeout_during_shutdown",
-                lease_id=lease_id
-            )
+            lease = self._job_leases.get(lease_id)
+            if lease:
+                error_metadata = {
+                    "code": "JOB_TIMEOUT",
+                    "message": "Job timed out during shutdown",
+                }
+                error_receipt = Receipt(
+                    lease_id=lease.lease_id,
+                    task_id=lease.task_id,
+                    worker_id=self.settings.worker_id,
+                    status=JobStatus.FAILED,
+                    timestamp=datetime.now(timezone.utc),
+                    error_metadata=error_metadata,
+                )
+                success = await self.client.send_receipt(error_receipt)
+                record_receipt_sent("failed", success)
+                await self._emit_legivellum_receipt(
+                    lease,
+                    phase="complete",
+                    status="failure",
+                    summary=error_metadata["message"],
+                    error_metadata=error_metadata,
+                    completed_at=error_receipt.timestamp,
+                )
+                self._job_leases.pop(lease_id, None)
+            else:
+                logger.error(
+                    "job_timeout_during_shutdown",
+                    lease_id=lease_id
+                )
 
         self._active_jobs.clear()
         self._job_tasks.clear()
@@ -573,7 +641,7 @@ class WorkPoller:
                     break
 
                 # Extend the lease
-                success = await self.client.extend_lease(lease_id)
+                success = await self.client.extend_lease(lease)
                 record_lease_extension(success)
 
                 if success:
@@ -641,16 +709,24 @@ class WorkPoller:
         """Handle a single job."""
         async with self._semaphore:
             try:
+                started_at = datetime.now(timezone.utc)
+
                 # Send acceptance receipt
                 acceptance_receipt = Receipt(
                     lease_id=lease.lease_id,
                     task_id=lease.task_id,
                     worker_id=self.settings.worker_id,
                     status=JobStatus.RUNNING,
-                    timestamp=datetime.now(timezone.utc)
+                    timestamp=started_at
                 )
                 success = await self.client.send_receipt(acceptance_receipt)
                 record_receipt_sent("running", success)
+                await self._emit_legivellum_receipt(
+                    lease,
+                    phase="accepted",
+                    status="NA",
+                    started_at=started_at,
+                )
 
                 # Execute the job
                 final_receipt = await self.handler(lease)
@@ -658,6 +734,16 @@ class WorkPoller:
                 # Send completion receipt
                 success = await self.client.send_receipt(final_receipt)
                 record_receipt_sent(final_receipt.status.value, success)
+                await self._emit_legivellum_receipt(
+                    lease,
+                    phase="complete",
+                    status="success" if final_receipt.status == JobStatus.COMPLETE else "failure",
+                    summary=final_receipt.summary,
+                    artifact_pointers=final_receipt.artifact_pointers,
+                    error_metadata=final_receipt.error_metadata,
+                    started_at=started_at,
+                    completed_at=final_receipt.timestamp,
+                )
 
             except asyncio.CancelledError:
                 logger.warning(
@@ -675,6 +761,14 @@ class WorkPoller:
                     error_metadata={"code": "SHUTDOWN_CANCELLED", "message": "Job cancelled during shutdown"}
                 )
                 await self.client.send_receipt(error_receipt)
+                await self._emit_legivellum_receipt(
+                    lease,
+                    phase="complete",
+                    status="failure",
+                    summary="Job cancelled during shutdown",
+                    error_metadata=error_receipt.error_metadata,
+                    completed_at=error_receipt.timestamp,
+                )
                 raise
 
             except Exception as e:
@@ -693,6 +787,14 @@ class WorkPoller:
                 )
                 success = await self.client.send_receipt(error_receipt)
                 record_receipt_sent("failed", success)
+                await self._emit_legivellum_receipt(
+                    lease,
+                    phase="complete",
+                    status="failure",
+                    summary=str(e),
+                    error_metadata=error_receipt.error_metadata,
+                    completed_at=error_receipt.timestamp,
+                )
 
             finally:
                 # Stop heartbeat first
@@ -703,3 +805,34 @@ class WorkPoller:
                 self._job_tasks.pop(lease.lease_id, None)
                 self._job_leases.pop(lease.lease_id, None)
                 ACTIVE_JOBS.dec()
+
+    async def _emit_legivellum_receipt(
+        self,
+        lease: Lease,
+        phase: str,
+        status: str,
+        summary: str | None = None,
+        artifact_pointers: list[dict[str, Any]] | None = None,
+        error_metadata: dict[str, Any] | None = None,
+        started_at: datetime | None = None,
+        completed_at: datetime | None = None,
+    ) -> None:
+        """Emit a LegiVellum receipt to ReceiptGate if configured."""
+        receipt = build_receipt(
+            lease=lease,
+            phase=phase,
+            status=status,
+            worker_id=self.settings.worker_id,
+            summary=summary,
+            artifact_pointers=artifact_pointers,
+            error_metadata=error_metadata,
+            started_at=started_at,
+            completed_at=completed_at,
+        )
+        success = await self._receiptgate_client.emit_receipt(receipt)
+        if not success:
+            logger.debug(
+                "receiptgate_receipt_skipped",
+                phase=phase,
+                task_id=lease.task_id,
+            )

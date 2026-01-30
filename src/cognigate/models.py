@@ -26,7 +26,23 @@ class Lease(BaseModel):
     """A work lease from AsyncGate."""
     lease_id: str = Field(description="Unique identifier for this lease")
     task_id: str = Field(description="ID of the task being leased")
+    caused_by_receipt_id: str | None = Field(
+        default=None,
+        description="Receipt that caused this lease"
+    )
     payload: dict[str, Any] = Field(description="Task payload/parameters")
+    payload_pointer: str | None = Field(
+        default=None,
+        description="Pointer to payload stored in DepotGate or external store"
+    )
+    principal_ai: str | None = Field(
+        default=None,
+        description="Principal AI that owns the obligation"
+    )
+    tenant_id: str | None = Field(default=None, description="Tenant identifier")
+    task_type: str | None = Field(default=None, description="Task type/category")
+    expected_outcome_kind: str | None = Field(default=None, description="Expected outcome kind")
+    expected_artifact_mime: str | None = Field(default=None, description="Expected artifact MIME")
     profile: str = Field(default="default", description="Instruction profile to use")
     sink_config: dict[str, Any] = Field(default_factory=dict, description="Output sink configuration")
     constraints: dict[str, Any] = Field(default_factory=dict, description="Execution constraints")
@@ -80,8 +96,8 @@ class PlanStep(BaseModel):
     instructions: str | None = Field(default=None, description="Instructions for cognitive steps")
 
 
-class ExecutionPlan(BaseModel):
-    """A structured execution plan produced by the planning phase."""
+class ExecutionSteps(BaseModel):
+    """Structured execution steps produced by the planning phase."""
     task_id: str = Field(description="ID of the task this plan is for")
     steps: list[PlanStep] = Field(description="Ordered list of steps")
     estimated_tool_calls: int = Field(default=0, description="Estimated number of tool calls")

@@ -12,7 +12,7 @@ from .models import (
     Lease,
     Receipt,
     JobStatus,
-    ExecutionPlan,
+    ExecutionSteps,
     PlanStep,
     PlanStepType,
     ToolCall,
@@ -261,7 +261,7 @@ class JobExecutor:
         self,
         lease: Lease,
         prompt_builder: PromptBuilder
-    ) -> ExecutionPlan:
+    ) -> ExecutionSteps:
         """Execute the planning phase.
 
         Args:
@@ -269,7 +269,7 @@ class JobExecutor:
             prompt_builder: Prompt builder with profile
 
         Returns:
-            ExecutionPlan with ordered steps
+            ExecutionSteps with ordered steps
         """
         logger.info("Starting planning phase")
 
@@ -294,7 +294,7 @@ class JobExecutor:
                 instructions=step_data.get("instructions")
             ))
 
-        return ExecutionPlan(
+        return ExecutionSteps(
             task_id=lease.task_id,
             steps=steps,
             estimated_tool_calls=sum(1 for s in steps if s.step_type == PlanStepType.TOOL_INVOCATION),
@@ -304,7 +304,7 @@ class JobExecutor:
     async def _execution_loop(
         self,
         lease: Lease,
-        plan: ExecutionPlan,
+        plan: ExecutionSteps,
         prompt_builder: PromptBuilder
     ) -> dict[str, Any]:
         """Execute the plan steps.
@@ -524,7 +524,7 @@ class JobExecutor:
 
         return {"content": text, "tool_calls": len(tool_calls)}
 
-    def _create_summary(self, plan: ExecutionPlan, context: dict[str, Any]) -> str:
+    def _create_summary(self, plan: ExecutionSteps, context: dict[str, Any]) -> str:
         """Create a bounded summary of execution.
 
         Args:
