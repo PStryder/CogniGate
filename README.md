@@ -39,131 +39,105 @@ These exclusions are design constraints, not omissions.
 ### Prerequisites
 
 - Python 3.11+
-- Docker (for deployment)
-- AsyncGate instance (for work leasing)
-- AI provider credentials (e.g., OpenRouter)
+- AI provider credentials (OpenRouter or OpenAI-compatible)
+- AsyncGate instance (optional, for leased work)
+- ReceiptGate instance (optional, for LegiVellum receipts)
+- Docker Desktop (optional, for compose)
 
-### Installation
+### Install
 
 ```bash
 pip install -e ".[dev]"
 ```
 
-### Configuration
+### Run local (Docker compose)
+
+```bash
+./run_local.sh
+# or
+.\run_local.ps1
+```
+
+### Run local (Python)
+
+```bash
+# set required env vars, then
+python -m cognigate.main
+```
+
+### MCP API (canonical HTTP surface)
+
+CogniGate exposes a single JSON-RPC endpoint at `/mcp`.
+
+List tools:
+```bash
+curl -s http://localhost:8000/mcp \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: cg_your-secret-api-key" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+```
+
+Execute a job synchronously:
+```bash
+curl -s http://localhost:8000/mcp \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: cg_your-secret-api-key" \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"cognigate.execute_job","arguments":{"task_id":"demo-001","payload":{"task":"Summarize the text","context":"LegiVellum uses receipts for coordination."},"profile":"default","sink_config":{"sink_id":"stdout"}}}}'
+```
+
+For local development you can set `COGNIGATE_ALLOW_INSECURE_DEV=true` to bypass auth.
+
+### Golden path script
+
+```bash
+python scripts/golden_path.py --endpoint http://localhost:8000/mcp --api-key cg_your-secret-api-key
+```
+
+## Configuration
 
 Environment variables (prefix `COGNIGATE_`):
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `STANDALONE_MODE` | true | Run without AsyncGate (default for GP use) |
-| `RECEIPT_STORAGE_DIR` | ./receipts | Directory for receipt storage |
-| `ASYNCGATE_ENDPOINT` | http://localhost:8080 | AsyncGate API endpoint |
-| `ASYNCGATE_AUTH_TOKEN` | - | Authentication token for AsyncGate |
+| `STANDALONE_MODE` | true | Run without AsyncGate polling (local dev) |
+| `RECEIPT_STORAGE_DIR` | ./receipts | Receipt storage directory (standalone mode) |
+| `ASYNCGATE_ENDPOINT` | http://localhost:8080 | AsyncGate MCP endpoint |
+| `ASYNCGATE_AUTH_TOKEN` | - | AsyncGate auth token |
+| `ASYNCGATE_TENANT_ID` | default | Tenant identifier for AsyncGate |
+| `RECEIPTGATE_ENDPOINT` | - | ReceiptGate MCP endpoint |
+| `RECEIPTGATE_AUTH_TOKEN` | - | ReceiptGate auth token |
+| `RECEIPTGATE_EMIT_RECEIPTS` | true | Emit LegiVellum receipts |
 | `AI_ENDPOINT` | https://openrouter.ai/api/v1 | AI provider endpoint |
-| `AI_API_KEY` | - | API key for AI provider |
-| `AI_MODEL` | anthropic/claude-3-opus | AI model to use |
-| `AI_MAX_TOKENS` | 4096 | Maximum tokens for AI responses |
+| `AI_API_KEY` | - | AI provider key |
+| `AI_MODEL` | anthropic/claude-3-opus | AI model |
+| `AI_MAX_TOKENS` | 4096 | Max tokens |
 | `POLLING_INTERVAL` | 5.0 | Polling interval in seconds |
-| `MAX_CONCURRENT_JOBS` | 1 | Maximum concurrent job executions |
+| `MAX_CONCURRENT_JOBS` | 1 | Max concurrent jobs |
 | `JOB_TIMEOUT` | 300 | Job timeout in seconds |
-| `MAX_RETRIES` | 3 | Maximum retries for failed tool calls |
-| `CONFIG_DIR` | /etc/cognigate | Configuration directory |
-| `PLUGINS_DIR` | /etc/cognigate/plugins | Plugins directory |
-| `PROFILES_DIR` | /etc/cognigate/profiles | Instruction profiles directory |
+| `MAX_RETRIES` | 3 | Max tool retries |
 | `HOST` | 0.0.0.0 | Server host |
 | `PORT` | 8000 | Server port |
 | `WORKER_ID` | cognigate-worker-1 | Worker identifier |
+| `API_KEY` | - | API key for MCP requests |
+| `REQUIRE_AUTH` | true | Require API key for MCP |
+| `ALLOW_INSECURE_DEV` | false | Disable auth checks (dev only) |
 
-### Running
-
-```bash
-# Start the server
-uvicorn cognigate.api:app --host 0.0.0.0 --port 8000
-```
+See `.env.example` and `.env.standalone.example` for a complete set.
 
 ## Standalone Mode
 
-CogniGate can run in standalone mode as a general-purpose cognitive worker without requiring AsyncGate for job leasing. In this mode, jobs are submitted directly via REST API and receipts are stored locally.
+Standalone mode disables AsyncGate polling and stores receipts locally.
+All requests still go through `/mcp`.
 
-### When to Use Standalone Mode
-
-- Direct integration with other systems via REST API
-- Development and testing without AsyncGate
-- Standalone deployment scenarios
-- Simple single-worker setups
-
-### Configuration
-
-1. Copy the standalone example configuration:
-   ```bash
-   cp .env.standalone.example .env
-   ```
-
-2. Configure your AI provider credentials:
-   ```bash
-   COGNIGATE_AI_API_KEY=your-openrouter-api-key
-   COGNIGATE_API_KEY=cg_your-secret-api-key
-   ```
-
-3. Start in standalone mode:
-   ```bash
-   COGNIGATE_STANDALONE_MODE=true uvicorn cognigate.api:app --host 0.0.0.0 --port 8000
-   ```
-
-### Usage
-
-Submit a job and get the result synchronously:
-
+To enable:
 ```bash
-curl -X POST "http://localhost:8000/v1/jobs/execute"   -H "X-API-Key: cg_your-secret-api-key"   -H "Content-Type: application/json"   -d '{
-    "task_id": "example-001",
-    "payload": {
-      "instruction": "Summarize the key points of this text",
-      "context": "Your input text here..."
-    },
-    "profile": "default"
-  }'
+COGNIGATE_STANDALONE_MODE=true
 ```
 
-Retrieve a previous receipt:
+## Receipts
 
-```bash
-curl "http://localhost:8000/v1/receipts/{lease_id}"   -H "X-API-Key: cg_your-secret-api-key"
-```
-
-List all receipts:
-
-```bash
-curl "http://localhost:8000/v1/receipts"   -H "X-API-Key: cg_your-secret-api-key"
-```
-
-### Docker Standalone
-
-```bash
-docker-compose -f docker-compose.standalone.yml up
-```
-
-## API
-
-### Endpoints
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/health` | GET | Health check endpoint |
-| `/health/detailed` | GET | Detailed health with component status |
-| `/ready` | GET | Readiness check for Kubernetes |
-| `/live` | GET | Liveness check for Kubernetes |
-| `/metrics` | GET | Prometheus metrics |
-| `/v1/jobs/execute` | POST | Execute job synchronously (standalone mode) |
-| `/v1/jobs` | POST | Submit a job (async, background execution) |
-| `/v1/jobs/{lease_id}/cancel` | POST | Cancel a running job |
-| `/v1/receipts` | GET | List recent receipts (standalone mode) |
-| `/v1/receipts/{lease_id}` | GET | Get specific receipt (standalone mode) |
-| `/v1/polling/start` | POST | Start polling AsyncGate for work |
-| `/v1/polling/stop` | POST | Stop polling AsyncGate |
-| `/v1/config/profiles` | GET | List available instruction profiles |
-| `/v1/config/sinks` | GET | List available output sinks |
-| `/v1/config/mcp` | GET | List available MCP adapters |
+CogniGate emits LegiVellum receipts to ReceiptGate when configured.
+Set `COGNIGATE_RECEIPTGATE_ENDPOINT` and `COGNIGATE_RECEIPTGATE_AUTH_TOKEN` to enable.
 
 ## Tool Surface
 
@@ -175,7 +149,7 @@ Call a method on an MCP (Model Context Protocol) server.
 
 Parameters:
 - `server` (required): Name of the MCP server to call
-- `method` (required): MCP method to invoke (e.g., 'resources/read', 'tools/call')
+- `method` (required): MCP method to invoke (e.g., `resources/read`, `tools/call`)
 - `params` (optional): Parameters for the MCP method
 
 ### `artifact_write`
@@ -239,7 +213,7 @@ MCP adapters connect to upstream MCP servers with:
 - Execution over intent
 - Boring in the right places
 
-CogniGate exists to make AI cognition interruptible, auditable, recoverable, and safe to embed in real systems—without pretending it's a mind.
+CogniGate exists to make AI cognition interruptible, auditable, recoverable, and safe to embed in real systems without pretending it is a mind.
 
 ## License
 

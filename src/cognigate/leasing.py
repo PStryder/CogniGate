@@ -829,10 +829,30 @@ class WorkPoller:
             started_at=started_at,
             completed_at=completed_at,
         )
+        receipt_id = receipt.get("receipt_id")
+        logger.info(
+            "receiptgate_receipt_prepared",
+            receipt_id=receipt_id,
+            lease_id=lease.lease_id,
+            task_id=lease.task_id,
+            phase=phase,
+            status=status,
+            recipient_ai=receipt.get("recipient_ai"),
+        )
         success = await self._receiptgate_client.emit_receipt(receipt)
-        if not success:
+        if success:
+            logger.info(
+                "receiptgate_receipt_emitted",
+                receipt_id=receipt_id,
+                lease_id=lease.lease_id,
+                task_id=lease.task_id,
+                phase=phase,
+            )
+        else:
             logger.debug(
                 "receiptgate_receipt_skipped",
+                receipt_id=receipt_id,
+                lease_id=lease.lease_id,
                 phase=phase,
                 task_id=lease.task_id,
             )
