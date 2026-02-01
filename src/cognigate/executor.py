@@ -4,6 +4,8 @@ Handles the planning phase and execution loop for jobs.
 """
 
 from datetime import datetime, timezone
+from collections import deque
+import re
 from typing import Any
 
 from .ai_client import AIClient
@@ -71,6 +73,11 @@ class JobExecutor:
         self.settings = settings
         self.max_retries = settings.max_retries
         self._cancelled_jobs: set[str] = set()
+        # In-memory idempotency cache (per-process). Distributed deployments should
+        # use a shared store (e.g., Redis) to avoid duplicate execution.
+        self._completed_leases: dict[str, Receipt] = {}
+        self._completed_order: deque[str] = deque()
+        self._completed_cache_max = 10_000
 
     def cancel_job(self, lease_id: str) -> bool:
         """Mark a job for cancellation.
@@ -127,6 +134,16 @@ class JobExecutor:
         Returns:
             Receipt documenting completion or failure
         """
+        # Idempotency: return cached receipt if lease already completed
+        cached = self._completed_leases.get(lease.lease_id)
+        if cached:
+            logger.warning(
+                "lease_already_completed",
+                lease_id=lease.lease_id,
+                task_id=lease.task_id
+            )
+            return cached
+
         status_holder = ["unknown"]
 
         with JobContext(
@@ -191,14 +208,17 @@ class JobExecutor:
                     )
 
                     # Create success receipt
-                    return Receipt(
-                        lease_id=lease.lease_id,
-                        task_id=lease.task_id,
-                        worker_id=self.settings.worker_id,
-                        status=JobStatus.COMPLETE,
-                        timestamp=datetime.now(timezone.utc),
-                        artifact_pointers=artifact_dicts,
-                        summary=self._create_summary(plan, context)
+                    return self._finalize_receipt(
+                        lease.lease_id,
+                        Receipt(
+                            lease_id=lease.lease_id,
+                            task_id=lease.task_id,
+                            worker_id=self.settings.worker_id,
+                            status=JobStatus.COMPLETE,
+                            timestamp=datetime.now(timezone.utc),
+                            artifact_pointers=artifact_dicts,
+                            summary=self._create_summary(plan, context)
+                        )
                     )
 
                 except JobCancelledError as e:
@@ -209,13 +229,16 @@ class JobExecutor:
                         lease_id=lease.lease_id,
                         task_id=lease.task_id
                     )
-                    return Receipt(
-                        lease_id=lease.lease_id,
-                        task_id=lease.task_id,
-                        worker_id=self.settings.worker_id,
-                        status=JobStatus.FAILED,
-                        timestamp=datetime.now(timezone.utc),
-                        error_metadata={"code": e.code, "message": str(e)}
+                    return self._finalize_receipt(
+                        lease.lease_id,
+                        Receipt(
+                            lease_id=lease.lease_id,
+                            task_id=lease.task_id,
+                            worker_id=self.settings.worker_id,
+                            status=JobStatus.FAILED,
+                            timestamp=datetime.now(timezone.utc),
+                            error_metadata={"code": e.code, "message": str(e)}
+                        )
                     )
 
                 except ExecutionError as e:
@@ -227,13 +250,16 @@ class JobExecutor:
                         error_message=str(e),
                         recoverable=e.recoverable
                     )
-                    return Receipt(
-                        lease_id=lease.lease_id,
-                        task_id=lease.task_id,
-                        worker_id=self.settings.worker_id,
-                        status=JobStatus.FAILED,
-                        timestamp=datetime.now(timezone.utc),
-                        error_metadata={"code": e.code, "message": str(e)}
+                    return self._finalize_receipt(
+                        lease.lease_id,
+                        Receipt(
+                            lease_id=lease.lease_id,
+                            task_id=lease.task_id,
+                            worker_id=self.settings.worker_id,
+                            status=JobStatus.FAILED,
+                            timestamp=datetime.now(timezone.utc),
+                            error_metadata={"code": e.code, "message": str(e)}
+                        )
                     )
 
                 except Exception as e:
@@ -244,13 +270,16 @@ class JobExecutor:
                         error_type=type(e).__name__,
                         error_message=str(e)
                     )
-                    return Receipt(
-                        lease_id=lease.lease_id,
-                        task_id=lease.task_id,
-                        worker_id=self.settings.worker_id,
-                        status=JobStatus.FAILED,
-                        timestamp=datetime.now(timezone.utc),
-                        error_metadata={"code": "UNEXPECTED_ERROR", "message": str(e)}
+                    return self._finalize_receipt(
+                        lease.lease_id,
+                        Receipt(
+                            lease_id=lease.lease_id,
+                            task_id=lease.task_id,
+                            worker_id=self.settings.worker_id,
+                            status=JobStatus.FAILED,
+                            timestamp=datetime.now(timezone.utc),
+                            error_metadata={"code": "UNEXPECTED_ERROR", "message": str(e)}
+                        )
                     )
 
                 finally:
@@ -541,4 +570,28 @@ class JobExecutor:
         ]
 
         summary = " ".join(p for p in parts if p)
+        summary = self._redact_sensitive(summary)
         return summary[:1000]
+
+    def _redact_sensitive(self, text: str) -> str:
+        """Redact common sensitive patterns from summary text."""
+        redactions = [
+            (r"[A-Za-z0-9_\-]{32,}", "[REDACTED_TOKEN]"),
+            (r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b", "[REDACTED_EMAIL]"),
+            (r"\b\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}\b", "[REDACTED_CARD]"),
+        ]
+        sanitized = text
+        for pattern, replacement in redactions:
+            sanitized = re.sub(pattern, replacement, sanitized)
+        return sanitized
+
+    def _finalize_receipt(self, lease_id: str, receipt: Receipt) -> Receipt:
+        """Cache and return a receipt to enforce idempotency per lease."""
+        self._completed_leases[lease_id] = receipt
+        self._completed_order.append(lease_id)
+
+        # Trim cache if it grows too large
+        while len(self._completed_order) > self._completed_cache_max:
+            oldest = self._completed_order.popleft()
+            self._completed_leases.pop(oldest, None)
+        return receipt

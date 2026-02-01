@@ -10,6 +10,7 @@ import logging
 from typing import Any
 
 from pydantic import BaseModel, Field
+import json
 
 from .models import ToolCall, ToolResult
 from .plugins.base import SinkRegistry, ArtifactPointer
@@ -147,6 +148,37 @@ class ToolExecutor:
                 call_id=call.call_id,
                 success=False,
                 error="Missing required parameters: server and method"
+            )
+
+        # Validate params structure and size before calling MCP
+        if not isinstance(params, dict):
+            return ToolResult(
+                call_id=call.call_id,
+                success=False,
+                error="params must be a dictionary"
+            )
+
+        try:
+            params_payload = json.dumps(params, default=str)
+        except (TypeError, ValueError) as e:
+            return ToolResult(
+                call_id=call.call_id,
+                success=False,
+                error=f"params serialization failed: {e}"
+            )
+
+        if len(params_payload) > 100_000:
+            return ToolResult(
+                call_id=call.call_id,
+                success=False,
+                error=f"params too large: {len(params_payload)} bytes"
+            )
+
+        if "\x00" in params_payload:
+            return ToolResult(
+                call_id=call.call_id,
+                success=False,
+                error="params contains invalid null bytes"
             )
 
         adapter = self.mcp_registry.get(server_name)

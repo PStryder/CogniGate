@@ -1,16 +1,17 @@
-"""REST API for CogniGate."""
+"""MCP API for CogniGate."""
 
+import asyncio
 import os
 from contextlib import asynccontextmanager
-from typing import Any, Optional
+from typing import Any
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks, Depends, Request, Header
+import httpx
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
 from .config import Settings, Bootstrap
-from .models import Lease, Receipt, JobStatus
+from .models import Lease, Receipt
 from .leasing import AsyncGateClient, WorkPoller
 from .plugins import SinkRegistry, MCPAdapterRegistry
 from .plugins.builtin_sinks import register_builtin_sinks
@@ -20,13 +21,8 @@ from .executor import JobExecutor
 from .auth import AuthDependency
 from .receipts import ReceiptStore
 from .middleware import get_rate_limiter
-from .observability import configure_logging, get_logger, JobContext
-from .metrics import (
-    init_metrics,
-    get_metrics,
-    get_metrics_content_type,
-    ACTIVE_JOBS,
-)
+from .observability import configure_logging, get_logger
+from .metrics import init_metrics, get_metrics_snapshot, ACTIVE_JOBS
 
 
 logger = get_logger(__name__)
@@ -59,16 +55,6 @@ class AppState:
 
 
 state = AppState()
-
-
-async def get_auth(
-    authorization: Optional[str] = Header(None),
-    x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
-) -> bool:
-    """Run auth dependency for protected endpoints."""
-    if not state.auth_dependency:
-        raise HTTPException(status_code=503, detail="Auth not initialized")
-    return await state.auth_dependency(authorization=authorization, x_api_key=x_api_key)
 
 
 async def job_handler(lease: Lease) -> Receipt:
@@ -108,7 +94,7 @@ async def lifespan(app: FastAPI):
     elif state.settings.api_key:
         logger.info("Authentication enabled: API key configured")
     else:
-        logger.warning("No COGNIGATE_API_KEY configured - REST endpoints will reject requests")
+        logger.warning("No COGNIGATE_API_KEY configured - MCP requests will reject requests")
 
     # Bootstrap configuration
     state.bootstrap = Bootstrap(state.settings)
@@ -250,18 +236,6 @@ class SubmitJobRequest(BaseModel):
     constraints: dict[str, Any] = Field(default_factory=dict, description="Execution constraints")
 
 
-class SubmitJobResponse(BaseModel):
-    lease_id: str = Field(description="Assigned lease ID")
-    task_id: str = Field(description="Task ID")
-    status: str = Field(description="Job status")
-
-
-class JobStatusResponse(BaseModel):
-    lease_id: str = Field(description="Lease ID")
-    task_id: str = Field(description="Task ID")
-    status: str = Field(description="Job status")
-
-
 # Component health check helpers
 async def check_asyncgate_health() -> dict:
     """Check AsyncGate connection health."""
@@ -269,16 +243,13 @@ async def check_asyncgate_health() -> dict:
         return {"healthy": False, "error": "Client not initialized"}
 
     try:
-        # Try a lightweight operation
-        import httpx
-        response = await state.asyncgate_client._client.get(
-            f"{state.asyncgate_client.endpoint}/health",
-            timeout=5.0
+        result = await state.asyncgate_client._mcp_call(
+            "asyncgate.health",
+            {"tenant_id": state.asyncgate_client.tenant_id},
         )
         return {
-            "healthy": response.status_code == 200,
-            "status_code": response.status_code,
-            "latency_ms": response.elapsed.total_seconds() * 1000 if hasattr(response, 'elapsed') else None
+            "healthy": result.get("status") == "healthy",
+            "status": result.get("status"),
         }
     except httpx.TimeoutException:
         return {"healthy": False, "error": "Timeout"}
@@ -333,10 +304,9 @@ async def check_mcp_adapters_health() -> dict:
     return results
 
 
-# Endpoints
-@app.get("/health", response_model=HealthResponse)
+# Internal handlers used by MCP tools
 async def health_check():
-    """Basic health check endpoint (for load balancers)."""
+    """Basic health check payload."""
     active_jobs = len(state.work_poller._active_jobs) if state.work_poller else 0
     mode = "standalone" if state.settings and state.settings.standalone_mode else "asyncgate"
     return HealthResponse(
@@ -349,8 +319,6 @@ async def health_check():
         mode=mode
     )
 
-
-@app.get("/health/detailed")
 async def detailed_health_check():
     """Detailed health check with component status."""
     import asyncio
@@ -420,10 +388,8 @@ async def detailed_health_check():
         "check_duration_ms": round(elapsed_ms, 2)
     }
 
-
-@app.get("/ready")
 async def readiness_check():
-    """Readiness check for Kubernetes."""
+    """Readiness check for orchestrators."""
     if not state.job_executor:
         raise HTTPException(status_code=503, detail="Not ready")
 
@@ -433,34 +399,13 @@ async def readiness_check():
 
     return {"ready": True}
 
-
-@app.get("/live")
 async def liveness_check():
-    """Liveness check for Kubernetes."""
+    """Liveness check for orchestrators."""
     # Simple liveness check - if we can respond, we're alive
     return {"alive": True}
 
-
-@app.get("/metrics")
-async def metrics_endpoint():
-    """Prometheus metrics endpoint."""
-    return Response(
-        content=get_metrics(),
-        media_type=get_metrics_content_type()
-    )
-
-
-@app.post(
-    "/v1/jobs/execute",
-    response_model=Receipt,
-    dependencies=[Depends(get_auth), Depends(rate_limit_dependency)]
-)
 async def execute_job_sync(request: SubmitJobRequest):
-    """Execute a job synchronously and return the receipt.
-    
-    This endpoint is designed for standalone mode where CogniGate
-    acts as a direct cognitive worker without AsyncGate leasing.
-    """
+    """Execute a job synchronously and return the receipt."""
     if not state.job_executor:
         raise HTTPException(status_code=503, detail="Not ready")
 
@@ -484,13 +429,8 @@ async def execute_job_sync(request: SubmitJobRequest):
     
     return receipt
 
-
-@app.post("/v1/jobs", response_model=SubmitJobResponse, dependencies=[Depends(get_auth), Depends(rate_limit_dependency)])
-async def submit_job(request: SubmitJobRequest, background_tasks: BackgroundTasks):
-    """Submit a job directly (for testing/local use).
-
-    In production, jobs come from AsyncGate polling.
-    """
+async def submit_job(request: SubmitJobRequest) -> dict[str, Any]:
+    """Submit a job for background execution."""
     if not state.job_executor:
         raise HTTPException(status_code=503, detail="Not ready")
 
@@ -510,22 +450,12 @@ async def submit_job(request: SubmitJobRequest, background_tasks: BackgroundTask
         receipt = await state.job_executor.execute(lease)
         logger.info(f"Job {lease.task_id} completed with status: {receipt.status}")
 
-    background_tasks.add_task(run_job)
+    asyncio.create_task(run_job())
 
-    return SubmitJobResponse(
-        lease_id=lease.lease_id,
-        task_id=lease.task_id,
-        status="accepted"
-    )
+    return {"status": "accepted", "lease_id": lease.lease_id, "task_id": lease.task_id}
 
-
-@app.post("/v1/jobs/{lease_id}/cancel", dependencies=[Depends(get_auth), Depends(rate_limit_dependency)])
 async def cancel_job(lease_id: str):
-    """Cancel a running job.
-
-    The job will be cancelled at the next step boundary.
-    Returns 404 if the job is not found or already completed.
-    """
+    """Cancel a running job."""
     if not state.job_executor:
         raise HTTPException(status_code=503, detail="Not ready")
 
@@ -544,26 +474,21 @@ async def cancel_job(lease_id: str):
         "message": "Job will be cancelled at the next step boundary"
     }
 
-
-@app.post("/v1/polling/start", dependencies=[Depends(get_auth), Depends(rate_limit_dependency)])
-async def start_polling(background_tasks: BackgroundTasks):
+async def start_polling() -> dict[str, Any]:
     """Start polling AsyncGate for work."""
     if not state.work_poller:
         raise HTTPException(status_code=503, detail="Not ready")
 
-    background_tasks.add_task(state.work_poller.start)
+    asyncio.create_task(state.work_poller.start())
     return {"status": "polling_started"}
 
 
-@app.post("/v1/polling/stop", dependencies=[Depends(get_auth), Depends(rate_limit_dependency)])
-async def stop_polling():
+async def stop_polling() -> dict[str, Any]:
     """Stop polling AsyncGate."""
     if state.work_poller:
         await state.work_poller.stop()
     return {"status": "polling_stopped"}
 
-
-@app.get("/v1/config/profiles", dependencies=[Depends(get_auth), Depends(rate_limit_dependency)])
 async def list_profiles():
     """List available instruction profiles."""
     if not state.bootstrap:
@@ -573,8 +498,6 @@ async def list_profiles():
         "profiles": list(state.bootstrap.profiles.keys())
     }
 
-
-@app.get("/v1/config/sinks", dependencies=[Depends(get_auth), Depends(rate_limit_dependency)])
 async def list_sinks():
     """List available output sinks."""
     if not state.sink_registry:
@@ -584,8 +507,6 @@ async def list_sinks():
         "sinks": state.sink_registry.list_sinks()
     }
 
-
-@app.get("/v1/config/mcp", dependencies=[Depends(get_auth), Depends(rate_limit_dependency)])
 async def list_mcp_adapters():
     """List available MCP adapters."""
     if not state.mcp_registry:
@@ -595,12 +516,6 @@ async def list_mcp_adapters():
         "adapters": state.mcp_registry.list_adapters()
     }
 
-
-@app.get(
-    "/v1/receipts/{lease_id}",
-    response_model=Receipt,
-    dependencies=[Depends(get_auth), Depends(rate_limit_dependency)]
-)
 async def get_receipt(lease_id: str):
     """Get receipt for a specific lease."""
     if not state.receipt_store:
@@ -608,18 +523,14 @@ async def get_receipt(lease_id: str):
             status_code=503,
             detail="Receipt storage not enabled (set standalone_mode=true)"
         )
-    
+
     receipt = state.receipt_store.get(lease_id)
     if not receipt:
         raise HTTPException(status_code=404, detail="Receipt not found")
-    
+
     return receipt
 
 
-@app.get(
-    "/v1/receipts",
-    dependencies=[Depends(get_auth), Depends(rate_limit_dependency)]
-)
 async def list_receipts(limit: int = 100):
     """List recent receipts."""
     if not state.receipt_store:
@@ -627,5 +538,213 @@ async def list_receipts(limit: int = 100):
             status_code=503,
             detail="Receipt storage not enabled (set standalone_mode=true)"
         )
-    
+
     return {"receipts": state.receipt_store.list(limit)}
+
+
+# MCP JSON-RPC interface (canonical)
+
+
+class MCPRequest(BaseModel):
+    """JSON-RPC request envelope for MCP."""
+
+    jsonrpc: str = Field(default="2.0")
+    method: str
+    params: dict[str, Any] = Field(default_factory=dict)
+    id: Any = None
+
+
+MCP_TOOLS = [
+    {"name": "cognigate.health", "description": "Health check", "inputSchema": {"type": "object", "properties": {}}},
+    {"name": "cognigate.health_detailed", "description": "Detailed health", "inputSchema": {"type": "object", "properties": {}}},
+    {"name": "cognigate.ready", "description": "Readiness check", "inputSchema": {"type": "object", "properties": {}}},
+    {"name": "cognigate.live", "description": "Liveness check", "inputSchema": {"type": "object", "properties": {}}},
+    {
+        "name": "cognigate.metrics",
+        "description": "Metrics snapshot (text or structured)",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "format": {"type": "string", "enum": ["text", "structured"], "description": "Response format"},
+                "max_bytes": {"type": "integer", "minimum": 1, "description": "Max response size in bytes"},
+            },
+        },
+    },
+    {
+        "name": "cognigate.execute_job",
+        "description": "Execute job synchronously",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "string"},
+                "payload": {"type": "object"},
+                "profile": {"type": "string"},
+                "sink_config": {"type": "object"},
+                "constraints": {"type": "object"},
+            },
+            "required": ["task_id", "payload"],
+        },
+    },
+    {
+        "name": "cognigate.submit_job",
+        "description": "Submit job for background execution",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "string"},
+                "payload": {"type": "object"},
+                "profile": {"type": "string"},
+                "sink_config": {"type": "object"},
+                "constraints": {"type": "object"},
+            },
+            "required": ["task_id", "payload"],
+        },
+    },
+    {
+        "name": "cognigate.cancel_job",
+        "description": "Cancel a running job",
+        "inputSchema": {"type": "object", "properties": {"lease_id": {"type": "string"}}, "required": ["lease_id"]},
+    },
+    {"name": "cognigate.polling_start", "description": "Start polling AsyncGate", "inputSchema": {"type": "object", "properties": {}}},
+    {"name": "cognigate.polling_stop", "description": "Stop polling AsyncGate", "inputSchema": {"type": "object", "properties": {}}},
+    {"name": "cognigate.list_profiles", "description": "List instruction profiles", "inputSchema": {"type": "object", "properties": {}}},
+    {"name": "cognigate.list_sinks", "description": "List output sinks", "inputSchema": {"type": "object", "properties": {}}},
+    {"name": "cognigate.list_mcp_adapters", "description": "List MCP adapters", "inputSchema": {"type": "object", "properties": {}}},
+    {"name": "cognigate.list_receipts", "description": "List receipts (standalone mode only)", "inputSchema": {"type": "object", "properties": {"limit": {"type": "integer"}}}},
+    {"name": "cognigate.get_receipt", "description": "Get receipt by lease id (standalone mode only)", "inputSchema": {"type": "object", "properties": {"lease_id": {"type": "string"}}, "required": ["lease_id"]}},
+]
+
+
+def _jsonrpc_result(request_id: Any, result: Any) -> dict[str, Any]:
+    return {"jsonrpc": "2.0", "id": request_id, "result": result}
+
+
+def _jsonrpc_error(request_id: Any, code: Any, message: str) -> dict[str, Any]:
+    return {"jsonrpc": "2.0", "id": request_id, "error": {"code": code, "message": message}}
+
+
+async def _ensure_auth(http_request: Request) -> None:
+    if not state.settings:
+        raise HTTPException(status_code=503, detail="Auth not initialized")
+    if state.settings.allow_insecure_dev:
+        return
+    authorization = http_request.headers.get("authorization")
+    api_key = http_request.headers.get("x-api-key")
+    await state.auth_dependency(authorization=authorization, x_api_key=api_key)
+
+
+@app.post("/mcp")
+async def mcp_entry(request: MCPRequest, http_request: Request):
+    """Handle MCP JSON-RPC requests."""
+    await rate_limit_dependency(http_request)
+    await _ensure_auth(http_request)
+
+    if request.method == "tools/list":
+        return _jsonrpc_result(request.id, {"tools": MCP_TOOLS})
+
+    if request.method != "tools/call":
+        return _jsonrpc_error(request.id, -32601, f"Method not found: {request.method}")
+
+    params = request.params or {}
+    tool_name = params.get("name")
+    arguments = params.get("arguments") or {}
+    if not tool_name:
+        return _jsonrpc_error(request.id, -32602, "Missing tool name")
+
+    try:
+        result = await _handle_tool(tool_name, arguments)
+        return _jsonrpc_result(request.id, result)
+    except HTTPException as exc:
+        return _jsonrpc_error(request.id, exc.status_code, exc.detail)
+    except Exception as exc:
+        return _jsonrpc_error(request.id, "ERROR", str(exc))
+
+
+async def _handle_tool(name: str, arguments: dict[str, Any]) -> Any:
+    if name == "cognigate.health":
+        return (await health_check()).model_dump()
+    if name == "cognigate.health_detailed":
+        return await detailed_health_check()
+    if name == "cognigate.ready":
+        return await readiness_check()
+    if name == "cognigate.live":
+        return await liveness_check()
+    if name == "cognigate.metrics":
+        format_value = arguments.get("format") or "text"
+        if not isinstance(format_value, str):
+            raise HTTPException(status_code=400, detail="format must be a string")
+        format_value = format_value.lower()
+        if format_value not in ("text", "structured", "prometheus", "prometheus_text", "json"):
+            raise HTTPException(status_code=400, detail="format must be 'text' or 'structured'")
+        max_bytes = arguments.get("max_bytes")
+        if max_bytes is not None:
+            try:
+                max_bytes = int(max_bytes)
+            except (TypeError, ValueError) as exc:
+                raise HTTPException(status_code=400, detail="max_bytes must be an integer") from exc
+            if max_bytes <= 0:
+                raise HTTPException(status_code=400, detail="max_bytes must be > 0")
+        return get_metrics_snapshot(format=format_value, max_bytes=max_bytes)
+
+    if name == "cognigate.execute_job":
+        request = SubmitJobRequest(**arguments)
+        return (await execute_job_sync(request)).model_dump()
+
+    if name == "cognigate.submit_job":
+        request = SubmitJobRequest(**arguments)
+        return await submit_job(request)
+
+    if name == "cognigate.cancel_job":
+        lease_id = arguments.get("lease_id")
+        if not lease_id:
+            raise HTTPException(status_code=400, detail="lease_id is required")
+        if state.work_poller and lease_id not in state.work_poller._active_jobs:
+            raise HTTPException(status_code=404, detail="Job not found or already completed")
+        if not state.job_executor:
+            raise HTTPException(status_code=503, detail="Not ready")
+        state.job_executor.cancel_job(lease_id)
+        return {"status": "cancellation_requested", "lease_id": lease_id}
+
+    if name == "cognigate.polling_start":
+        if not state.work_poller:
+            raise HTTPException(status_code=503, detail="Not ready")
+        return await start_polling()
+
+    if name == "cognigate.polling_stop":
+        if state.work_poller:
+            await state.work_poller.stop()
+        return {"status": "polling_stopped"}
+
+    if name == "cognigate.list_profiles":
+        if not state.bootstrap:
+            raise HTTPException(status_code=503, detail="Not ready")
+        return {"profiles": list(state.bootstrap.profiles.keys())}
+
+    if name == "cognigate.list_sinks":
+        if not state.sink_registry:
+            raise HTTPException(status_code=503, detail="Not ready")
+        return {"sinks": state.sink_registry.list_sinks()}
+
+    if name == "cognigate.list_mcp_adapters":
+        if not state.mcp_registry:
+            raise HTTPException(status_code=503, detail="Not ready")
+        return {"adapters": state.mcp_registry.list_adapters()}
+
+    if name == "cognigate.get_receipt":
+        lease_id = arguments.get("lease_id")
+        if not lease_id:
+            raise HTTPException(status_code=400, detail="lease_id is required")
+        if not state.receipt_store:
+            raise HTTPException(status_code=503, detail="Receipt storage not enabled")
+        receipt = state.receipt_store.get(lease_id)
+        if not receipt:
+            raise HTTPException(status_code=404, detail="Receipt not found")
+        return receipt.model_dump()
+
+    if name == "cognigate.list_receipts":
+        if not state.receipt_store:
+            raise HTTPException(status_code=503, detail="Receipt storage not enabled")
+        limit = int(arguments.get("limit") or 100)
+        return {"receipts": state.receipt_store.list(limit)}
+
+    raise HTTPException(status_code=404, detail=f"Unknown tool: {name}")

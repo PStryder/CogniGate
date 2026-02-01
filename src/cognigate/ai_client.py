@@ -27,7 +27,14 @@ class AIClient:
         self.api_key = config.api_key
         self.model = config.model
         self.max_tokens = config.max_tokens
-        self._client = httpx.AsyncClient(timeout=120.0)
+        self._client = httpx.AsyncClient(
+            timeout=httpx.Timeout(
+                connect=5.0,
+                read=45.0,
+                write=10.0,
+                pool=5.0,
+            )
+        )
         self._circuit_breaker = CircuitBreaker(
             name="ai_provider",
             failure_threshold=failure_threshold,

@@ -3,6 +3,8 @@
 Provides metrics collection and exposure for monitoring.
 """
 
+import json
+import re
 import time
 from contextlib import contextmanager
 from typing import Generator
@@ -200,6 +202,138 @@ def get_metrics_content_type() -> str:
         Content type string
     """
     return CONTENT_TYPE_LATEST
+
+
+_LABEL_RE = re.compile(r'(\w+)\s*=\s*"((?:\\.|[^"\\])*)"')
+_SAMPLE_RE = re.compile(r'^([a-zA-Z_][a-zA-Z0-9_:]*)(\{[^}]*\})?\s+([^\s]+)(?:\s+([^\s]+))?$')
+
+
+def _unescape_label_value(value: str) -> str:
+    return (
+        value.replace("\\\\", "\\")
+        .replace("\\n", "\n")
+        .replace("\\t", "\t")
+        .replace('\\"', '"')
+    )
+
+
+def _parse_prometheus_text(payload: str) -> dict:
+    metrics: dict[str, dict] = {}
+    order: list[str] = []
+    errors: list[str] = []
+
+    for raw_line in payload.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.startswith("# HELP "):
+            parts = line.split(" ", 3)
+            if len(parts) >= 4:
+                name = parts[2]
+                metric = metrics.setdefault(name, {"name": name, "help": "", "type": "", "samples": []})
+                metric["help"] = parts[3]
+                if name not in order:
+                    order.append(name)
+            else:
+                errors.append(raw_line)
+            continue
+        if line.startswith("# TYPE "):
+            parts = line.split(" ", 3)
+            if len(parts) >= 4:
+                name = parts[2]
+                metric = metrics.setdefault(name, {"name": name, "help": "", "type": "", "samples": []})
+                metric["type"] = parts[3]
+                if name not in order:
+                    order.append(name)
+            else:
+                errors.append(raw_line)
+            continue
+
+        match = _SAMPLE_RE.match(line)
+        if not match:
+            errors.append(raw_line)
+            continue
+        name, label_block, value, timestamp = match.groups()
+        metric = metrics.setdefault(name, {"name": name, "help": "", "type": "", "samples": []})
+        if name not in order:
+            order.append(name)
+        labels: dict[str, str] = {}
+        if label_block:
+            label_text = label_block[1:-1]
+            for label_match in _LABEL_RE.finditer(label_text):
+                labels[label_match.group(1)] = _unescape_label_value(label_match.group(2))
+        sample = {"labels": labels, "value": value}
+        if timestamp:
+            sample["timestamp"] = timestamp
+        metric["samples"].append(sample)
+
+    return {"metrics": [metrics[name] for name in order], "errors": errors}
+
+
+def _truncate_structured(metrics: list[dict], max_bytes: int) -> tuple[list[dict], bool]:
+    if max_bytes <= 0:
+        return metrics, False
+    limited: list[dict] = []
+    truncated = False
+    total = len(metrics)
+    for metric in metrics:
+        candidate = {
+            "format": "structured",
+            "metrics": limited + [metric],
+            "total_metrics": total,
+            "returned_metrics": len(limited) + 1,
+            "truncated": False,
+        }
+        size = len(json.dumps(candidate, separators=(",", ":")).encode("utf-8"))
+        if size > max_bytes:
+            truncated = True
+            break
+        limited.append(metric)
+    return limited, truncated
+
+
+def get_metrics_snapshot(format: str = "text", max_bytes: int | None = None) -> dict:
+    """Get metrics in a JSON-safe snapshot for MCP responses."""
+    fmt = (format or "text").lower()
+    payload_bytes = get_metrics()
+    total_bytes = len(payload_bytes)
+
+    if fmt in ("text", "prometheus_text", "prometheus"):
+        truncated = False
+        returned_bytes = total_bytes
+        if max_bytes and total_bytes > max_bytes:
+            payload_bytes = payload_bytes[:max_bytes]
+            truncated = True
+            returned_bytes = len(payload_bytes)
+        payload = payload_bytes.decode("utf-8", errors="ignore")
+        return {
+            "format": "text",
+            "content_type": get_metrics_content_type(),
+            "payload": payload,
+            "total_bytes": total_bytes,
+            "returned_bytes": returned_bytes,
+            "truncated": truncated,
+        }
+
+    if fmt in ("structured", "json"):
+        parsed = _parse_prometheus_text(payload_bytes.decode("utf-8", errors="ignore"))
+        metrics = parsed["metrics"]
+        truncated = False
+        if max_bytes:
+            metrics, truncated = _truncate_structured(metrics, max_bytes)
+        response = {
+            "format": "structured",
+            "content_type": "application/json",
+            "metrics": metrics,
+            "total_metrics": len(parsed["metrics"]),
+            "returned_metrics": len(metrics),
+            "truncated": truncated,
+        }
+        if parsed["errors"]:
+            response["errors"] = parsed["errors"]
+        return response
+
+    raise ValueError(f"Unsupported format: {format}")
 
 
 @contextmanager

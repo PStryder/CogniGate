@@ -1,6 +1,7 @@
 """MCP (Model Context Protocol) adapter for CogniGate."""
 
 from typing import Any
+import fnmatch
 
 import httpx
 from pydantic import BaseModel, Field
@@ -50,6 +51,19 @@ class MCPAdapter:
         "resources/delete",
     ])
 
+    # Always forbidden methods, even in write mode
+    ALWAYS_FORBIDDEN = frozenset([
+        "resources/delete",
+        "admin/*",
+        "system/*",
+    ])
+
+    # Allowed write methods (minimal safe set)
+    SAFE_WRITE_METHODS = frozenset([
+        "tools/call",
+        "resources/write",
+    ])
+
     def __init__(
         self,
         endpoint: MCPEndpoint,
@@ -77,10 +91,21 @@ class MCPAdapter:
 
     def _is_allowed(self, method: str) -> bool:
         """Check if a method is allowed given read_only setting."""
-        if not self.read_only:
-            return True
-        # In read-only mode, only allow read methods
-        return method in self.READ_ONLY_METHODS
+        normalized = (method or "").strip()
+        if not normalized:
+            return False
+
+        # Hard-deny forbidden patterns first
+        for pattern in self.ALWAYS_FORBIDDEN:
+            if fnmatch.fnmatch(normalized, pattern):
+                return False
+
+        if self.read_only:
+            # In read-only mode, only allow read methods
+            return normalized in self.READ_ONLY_METHODS
+
+        # In write mode, only allow a minimal safe set
+        return normalized in (self.READ_ONLY_METHODS | self.SAFE_WRITE_METHODS)
 
     async def call(self, request: MCPRequest) -> MCPResponse:
         """Call an MCP method on the server.

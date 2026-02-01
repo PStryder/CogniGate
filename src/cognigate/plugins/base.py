@@ -118,11 +118,11 @@ class SinkRegistry:
             # Verify owner is current process user
             current_uid = os.getuid() if hasattr(os, 'getuid') else None
             if current_uid is not None and path.stat().st_uid != current_uid:
-                logger.warning(
+                logger.critical(
                     f"SECURITY: Plugin directory {path} not owned by process user "
                     f"(owner={path.stat().st_uid}, process={current_uid})"
                 )
-                # This is a warning, not a hard failure, for container environments
+                return False
             
             return True
             
