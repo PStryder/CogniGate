@@ -26,17 +26,12 @@ class SinkPlugin(ABC):
     returning an artifact pointer.
     """
 
-    @property
-    @abstractmethod
-    def sink_id(self) -> str:
-        """Unique identifier for this sink."""
-        pass
+    sink_id: str = ""
 
     @property
-    @abstractmethod
     def config_schema(self) -> dict[str, Any]:
         """JSON schema for sink configuration."""
-        pass
+        return {}
 
     @abstractmethod
     async def deliver(
@@ -97,6 +92,10 @@ class SinkRegistry:
         """
         import stat
         import os
+
+        # Windows ACLs don't map cleanly to POSIX permission bits.
+        if os.name == "nt":
+            return True
         
         try:
             mode = path.stat().st_mode

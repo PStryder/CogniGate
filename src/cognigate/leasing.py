@@ -27,10 +27,7 @@ logger = get_logger(__name__)
 
 
 def _normalize_mcp_endpoint(endpoint: str) -> str:
-    endpoint = (endpoint or "").rstrip("/")
-    if endpoint and not endpoint.endswith("/mcp"):
-        endpoint = f"{endpoint}/mcp"
-    return endpoint
+    return (endpoint or "").rstrip("/")
 
 
 class DeadLetterQueue:
@@ -134,6 +131,7 @@ class AsyncGateClient:
         backoff_base: float = 2.0
     ):
         self.endpoint = _normalize_mcp_endpoint(settings.asyncgate_endpoint)
+        self._use_mcp = self.endpoint.rstrip("/").endswith("/mcp")
         self.auth_token = settings.asyncgate_auth_token
         self.worker_id = settings.worker_id
         self.tenant_id = settings.asyncgate_tenant_id
@@ -174,6 +172,21 @@ class AsyncGateClient:
             )
         return data.get("result", {})
 
+    async def _post_json(self, url: str, payload: dict[str, Any]) -> dict[str, Any]:
+        response = await self._client.post(url, json=payload, headers=self._headers())
+        response.raise_for_status()
+        return response.json() if response.content else {}
+
+    @staticmethod
+    def _serialize_artifacts(artifacts: list[Any]) -> list[dict[str, Any]]:
+        serialized: list[dict[str, Any]] = []
+        for artifact in artifacts:
+            if hasattr(artifact, "model_dump"):
+                serialized.append(artifact.model_dump())
+            elif isinstance(artifact, dict):
+                serialized.append(artifact)
+        return serialized
+
     async def poll_for_work(self) -> Lease | None:
         """Poll AsyncGate for available work.
 
@@ -181,14 +194,15 @@ class AsyncGateClient:
             A Lease if work is available, None otherwise.
         """
         try:
-            data = await self._mcp_call(
-                "asyncgate.lease_next",
-                {
-                    "worker_id": self.worker_id,
-                    "max_tasks": 1,
-                    "tenant_id": self.tenant_id,
-                },
-            )
+            payload = {
+                "worker_id": self.worker_id,
+                "max_tasks": 1,
+                "tenant_id": self.tenant_id,
+            }
+            if self._use_mcp:
+                data = await self._mcp_call("asyncgate.lease_next", payload)
+            else:
+                data = await self._post_json(f"{self.endpoint}/v1/leases/claim", payload)
 
             tasks = data.get("tasks", [])
             if not tasks:
@@ -357,63 +371,68 @@ class AsyncGateClient:
         return False
 
     async def _report_progress(self, receipt: Receipt) -> bool:
-        await self._mcp_call(
-            "asyncgate.report_progress",
-            {
-                "worker_id": self.worker_id,
-                "task_id": receipt.task_id,
-                "lease_id": receipt.lease_id,
-                "progress": {
-                    "status": receipt.status.value,
-                    "summary": receipt.summary,
-                    "artifact_pointers": receipt.artifact_pointers,
-                    "timestamp": receipt.timestamp.isoformat(),
-                },
-                "tenant_id": self.tenant_id,
+        artifact_pointers = self._serialize_artifacts(receipt.artifact_pointers)
+        payload = {
+            "worker_id": self.worker_id,
+            "task_id": receipt.task_id,
+            "lease_id": receipt.lease_id,
+            "progress": {
+                "status": receipt.status.value,
+                "summary": receipt.summary,
+                "artifact_pointers": artifact_pointers,
+                "timestamp": receipt.timestamp.isoformat(),
             },
-        )
+            "tenant_id": self.tenant_id,
+        }
+        if self._use_mcp:
+            await self._mcp_call("asyncgate.report_progress", payload)
+        else:
+            await self._post_json(f"{self.endpoint}/v1/tasks/{receipt.task_id}/progress", payload)
         logger.info(f"Progress reported: lease={receipt.lease_id}, status={receipt.status}")
         return True
 
     async def _complete_task(self, receipt: Receipt) -> bool:
+        artifact_pointers = self._serialize_artifacts(receipt.artifact_pointers)
         result_payload: dict[str, Any] = {
             "summary": receipt.summary,
-            "artifact_pointers": receipt.artifact_pointers,
+            "artifact_pointers": artifact_pointers,
         }
-        await self._mcp_call(
-            "asyncgate.complete",
-            {
-                "worker_id": self.worker_id,
-                "task_id": receipt.task_id,
-                "lease_id": receipt.lease_id,
-                "result": result_payload,
-                "artifacts": {"pointers": receipt.artifact_pointers} if receipt.artifact_pointers else None,
-                "tenant_id": self.tenant_id,
-            },
-        )
+        payload = {
+            "worker_id": self.worker_id,
+            "task_id": receipt.task_id,
+            "lease_id": receipt.lease_id,
+            "result": result_payload,
+            "artifacts": {"pointers": artifact_pointers} if artifact_pointers else None,
+            "tenant_id": self.tenant_id,
+        }
+        if self._use_mcp:
+            await self._mcp_call("asyncgate.complete", payload)
+        else:
+            await self._post_json(f"{self.endpoint}/v1/tasks/{receipt.task_id}/complete", payload)
         logger.info(f"Task completed: lease={receipt.lease_id}, status={receipt.status}")
         return True
 
     async def _fail_task(self, receipt: Receipt) -> bool:
         error_metadata = receipt.error_metadata or {}
-        await self._mcp_call(
-            "asyncgate.fail",
-            {
-                "worker_id": self.worker_id,
-                "task_id": receipt.task_id,
-                "lease_id": receipt.lease_id,
-                "error": {
-                    "code": error_metadata.get("code", "JOB_FAILED"),
-                    "message": error_metadata.get("message", "Job failed"),
-                },
-                "retryable": False,
-                "tenant_id": self.tenant_id,
+        payload = {
+            "worker_id": self.worker_id,
+            "task_id": receipt.task_id,
+            "lease_id": receipt.lease_id,
+            "error": {
+                "code": error_metadata.get("code", "JOB_FAILED"),
+                "message": error_metadata.get("message", "Job failed"),
             },
-        )
+            "retryable": False,
+            "tenant_id": self.tenant_id,
+        }
+        if self._use_mcp:
+            await self._mcp_call("asyncgate.fail", payload)
+        else:
+            await self._post_json(f"{self.endpoint}/v1/tasks/{receipt.task_id}/fail", payload)
         logger.info(f"Task failed: lease={receipt.lease_id}, status={receipt.status}")
         return True
 
-    async def extend_lease(self, lease: Lease) -> bool:
+    async def extend_lease(self, lease: Lease | str) -> bool:
         """Extend a lease's timeout.
 
         Args:
@@ -422,20 +441,23 @@ class AsyncGateClient:
         Returns:
             True if extension was successful, False otherwise
         """
+        lease_id = lease.lease_id if isinstance(lease, Lease) else str(lease)
+        task_id = lease.task_id if isinstance(lease, Lease) else None
         try:
-            await self._mcp_call(
-                "asyncgate.renew_lease",
-                {
-                    "worker_id": self.worker_id,
-                    "task_id": lease.task_id,
-                    "lease_id": lease.lease_id,
-                    "extend_by_seconds": None,
-                    "tenant_id": self.tenant_id,
-                },
-            )
+            payload = {
+                "worker_id": self.worker_id,
+                "task_id": task_id,
+                "lease_id": lease_id,
+                "extend_by_seconds": None,
+                "tenant_id": self.tenant_id,
+            }
+            if self._use_mcp:
+                await self._mcp_call("asyncgate.renew_lease", payload)
+            else:
+                await self._post_json(f"{self.endpoint}/v1/leases/{lease_id}/extend", payload)
             return True
         except Exception as e:
-            logger.error(f"Error extending lease {lease.lease_id}: {e}")
+            logger.error(f"Error extending lease {lease_id}: {e}")
             return False
 
 

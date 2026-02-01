@@ -6,7 +6,7 @@ import logging
 import os
 
 import yaml
-from pydantic import BaseModel, Field, field_validator, ValidationInfo
+from pydantic import BaseModel, ConfigDict, Field, field_validator, ValidationInfo
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -209,11 +209,13 @@ class Settings(BaseSettings):
 
 class InstructionProfile(BaseModel):
     """An instruction profile loaded from filesystem."""
-    name: str = Field(description="Profile identifier")
+    name: str = Field(alias="profile_id", description="Profile identifier")
     system_instructions: str = Field(description="System prompt instructions")
     formatting_constraints: str = Field(default="", description="Output formatting rules")
     planning_schema: dict[str, Any] = Field(default_factory=dict, description="Planning output schema")
     tool_usage_rules: str = Field(default="", description="Rules for tool usage")
+
+    model_config = ConfigDict(populate_by_name=True)
 
 
 def load_instruction_profile(profile_path: Path) -> InstructionProfile:

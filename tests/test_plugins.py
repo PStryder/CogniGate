@@ -298,7 +298,7 @@ class TestFileSink:
         assert "/" not in sanitized
         assert "\\" not in sanitized
 
-    def test_file_sink_delivers_to_safe_location(self, temp_dir):
+    async def test_file_sink_delivers_to_safe_location(self, temp_dir):
         """Test FileSink delivers files to safe locations."""
         from cognigate.plugins.builtin_sinks import FileSink
         

@@ -32,6 +32,7 @@ from .fixtures import (
     complex_lease,
     integration_settings,
     test_instruction_profile,
+    test_mcp_endpoint,
 )
 
 
@@ -41,7 +42,7 @@ pytestmark = pytest.mark.asyncio
 class TestFullJobExecution:
     """Tests for complete job execution flow."""
 
-    async def test_simple_job_success(self, integration_harness, simple_lease, integration_settings, tmp_path):
+    async def test_simple_job_success(self, integration_harness, simple_lease, integration_settings, test_instruction_profile, tmp_path):
         """Test successful execution of a simple job."""
         # Setup
         harness = integration_harness
@@ -85,7 +86,14 @@ class TestFullJobExecution:
             assert receipt.error_metadata is None
             assert "2 steps" in receipt.summary.lower() or "steps" in receipt.summary.lower()
 
-    async def test_job_with_tool_calls(self, integration_harness, complex_lease, integration_settings):
+    async def test_job_with_tool_calls(
+        self,
+        integration_harness,
+        complex_lease,
+        integration_settings,
+        test_instruction_profile,
+        test_mcp_endpoint,
+    ):
         """Test job execution with MCP tool calls."""
         harness = integration_harness
         harness.asyncgate.add_lease(complex_lease)
@@ -122,6 +130,7 @@ class TestFullJobExecution:
             register_builtin_sinks(sink_registry)
 
             mcp_registry = MCPAdapterRegistry()
+            mcp_registry.register(test_mcp_endpoint.model_copy(update={"read_only": False}))
 
             ai_client = AIClient(integration_settings.get_ai_config())
             ai_client._client = mock_client
@@ -135,7 +144,7 @@ class TestFullJobExecution:
             assert receipt.status == JobStatus.COMPLETE
             assert receipt.task_id == complex_lease.task_id
 
-    async def test_job_planning_failure(self, integration_harness, simple_lease, integration_settings):
+    async def test_job_planning_failure(self, integration_harness, simple_lease, integration_settings, test_instruction_profile):
         """Test job failure during planning phase."""
         harness = integration_harness
         harness.ai_provider.set_failure_mode(max_failures=10)  # Always fail
@@ -161,7 +170,7 @@ class TestFullJobExecution:
             assert receipt.status == JobStatus.FAILED
             assert receipt.error_metadata is not None
 
-    async def test_job_step_failure_recovery(self, integration_harness, simple_lease, integration_settings):
+    async def test_job_step_failure_recovery(self, integration_harness, simple_lease, integration_settings, test_instruction_profile):
         """Test that job handles step failures gracefully."""
         harness = integration_harness
 
@@ -196,7 +205,7 @@ class TestFullJobExecution:
             # Should fail because planning request fails
             assert receipt.status == JobStatus.FAILED
 
-    async def test_job_timeout_handling(self, integration_harness, simple_lease, integration_settings):
+    async def test_job_timeout_handling(self, integration_harness, simple_lease, integration_settings, test_instruction_profile):
         """Test job execution with timeout constraints."""
         harness = integration_harness
 
@@ -228,7 +237,7 @@ class TestFullJobExecution:
             # Job should complete (timeout is not enforced at executor level currently)
             assert receipt.task_id == simple_lease.task_id
 
-    async def test_missing_profile_fallback(self, integration_harness, integration_settings):
+    async def test_missing_profile_fallback(self, integration_harness, integration_settings, test_instruction_profile):
         """Test job execution with missing profile falls back to default."""
         harness = integration_harness
 
@@ -266,7 +275,7 @@ class TestFullJobExecution:
             receipt = await job_executor.execute(lease)
             assert receipt.status == JobStatus.COMPLETE
 
-    async def test_artifact_generation(self, integration_harness, simple_lease, integration_settings, tmp_path):
+    async def test_artifact_generation(self, integration_harness, simple_lease, integration_settings, test_instruction_profile, tmp_path):
         """Test job execution produces artifacts correctly."""
         harness = integration_harness
 
@@ -531,7 +540,7 @@ class TestErrorPaths:
             result = await asyncgate_client.poll_for_work()
             assert result is None
 
-    async def test_ai_provider_timeout(self, integration_harness, simple_lease, integration_settings):
+    async def test_ai_provider_timeout(self, integration_harness, simple_lease, integration_settings, test_instruction_profile):
         """Test handling of AI provider timeouts."""
         harness = integration_harness
 
@@ -561,7 +570,14 @@ class TestErrorPaths:
             receipt = await job_executor.execute(simple_lease)
             assert receipt.status == JobStatus.FAILED
 
-    async def test_mcp_server_failure(self, integration_harness, complex_lease, integration_settings):
+    async def test_mcp_server_failure(
+        self,
+        integration_harness,
+        complex_lease,
+        integration_settings,
+        test_instruction_profile,
+        test_mcp_endpoint,
+    ):
         """Test handling of MCP server failures."""
         harness = integration_harness
 
@@ -589,6 +605,7 @@ class TestErrorPaths:
 
             sink_registry = SinkRegistry()
             mcp_registry = MCPAdapterRegistry()
+            mcp_registry.register(test_mcp_endpoint.model_copy(update={"read_only": False}))
 
             ai_client = AIClient(integration_settings.get_ai_config())
             ai_client._client = mock_client

@@ -4,7 +4,9 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+from .plugins.base import ArtifactPointer
 
 
 class JobStatus(str, Enum):
@@ -12,6 +14,15 @@ class JobStatus(str, Enum):
     PENDING = "pending"
     RUNNING = "running"
     COMPLETE = "complete"
+    FAILED = "failed"
+
+
+class ReceiptStatus(str, Enum):
+    """Status values for receipt lifecycle."""
+    ACCEPTED = "accepted"
+    PLANNING = "planning"
+    EXECUTING = "executing"
+    COMPLETED = "completed"
     FAILED = "failed"
 
 
@@ -48,27 +59,36 @@ class Lease(BaseModel):
     constraints: dict[str, Any] = Field(default_factory=dict, description="Execution constraints")
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
+    @field_validator("lease_id", "task_id")
+    @classmethod
+    def _non_empty_identifier(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("identifier must be non-empty")
+        return v
+
 
 class Receipt(BaseModel):
     """A receipt documenting job state or completion."""
+    receipt_id: str | None = Field(default=None, description="Receipt identifier")
     lease_id: str = Field(description="ID of the lease this receipt is for")
     task_id: str = Field(description="ID of the task")
-    worker_id: str = Field(description="ID of the worker processing the job")
-    status: JobStatus = Field(description="Current job status")
+    worker_id: str | None = Field(default=None, description="ID of the worker processing the job")
+    status: ReceiptStatus | JobStatus = Field(description="Current job status")
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    artifact_pointers: list[dict[str, Any]] = Field(
+    artifact_pointers: list[ArtifactPointer] = Field(
         default_factory=list,
-        description="Pointers to produced artifacts"
+        description="Pointers to produced artifacts",
     )
     summary: str = Field(
         default="",
         max_length=1000,
-        description="Bounded summary of results"
+        description="Bounded summary of results",
     )
     error_metadata: dict[str, Any] | None = Field(
         default=None,
-        description="Error information if failed"
+        description="Error information if failed",
     )
+    error: str | None = Field(default=None, description="Compatibility error message")
 
     def to_ledger_entry(self) -> dict[str, Any]:
         """Convert to a ledger-safe entry (no large blobs or sensitive data)."""
@@ -81,9 +101,41 @@ class Receipt(BaseModel):
             "artifact_count": len(self.artifact_pointers),
             "artifact_pointers": self.artifact_pointers,
             "summary": self.summary[:1000] if self.summary else "",
-            "has_error": self.error_metadata is not None,
-            "error_code": self.error_metadata.get("code") if self.error_metadata else None
+            "has_error": self.error_metadata is not None or self.error is not None,
+            "error_code": self.error_metadata.get("code") if self.error_metadata else None,
         }
+
+    @property
+    def artifacts(self) -> list[ArtifactPointer]:
+        """Backwards-compatible alias for artifact_pointers."""
+        return self.artifact_pointers
+
+    def model_dump(self, *args, **kwargs):  # type: ignore[override]
+        data = super().model_dump(*args, **kwargs)
+        if "artifacts" not in data:
+            data["artifacts"] = data.get("artifact_pointers", [])
+        return data
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_fields(cls, values: Any) -> Any:
+        if not isinstance(values, dict):
+            return values
+
+        if "artifacts" in values and "artifact_pointers" not in values:
+            values["artifact_pointers"] = values["artifacts"]
+
+        if "error" in values and "error_metadata" not in values:
+            err = values["error"]
+            values["error_metadata"] = err if isinstance(err, dict) else {"message": err}
+
+        if "error_metadata" in values and "error" not in values:
+            if isinstance(values["error_metadata"], dict):
+                values["error"] = values["error_metadata"].get("message")
+
+        return values
+
+    model_config = {"populate_by_name": True}
 
 
 class PlanStep(BaseModel):
@@ -95,12 +147,29 @@ class PlanStep(BaseModel):
     tool_params: dict[str, Any] | None = Field(default=None, description="Tool parameters")
     instructions: str | None = Field(default=None, description="Instructions for cognitive steps")
 
+    @field_validator("step_number")
+    @classmethod
+    def _positive_step_number(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("step_number must be >= 1")
+        return v
+
 
 class ExecutionSteps(BaseModel):
     """Structured execution steps produced by the planning phase."""
     task_id: str = Field(description="ID of the task this plan is for")
     steps: list[PlanStep] = Field(description="Ordered list of steps")
     estimated_tool_calls: int = Field(default=0, description="Estimated number of tool calls")
+    summary: str = Field(default="", description="Brief summary of the plan")
+
+
+class CognitiveStep(PlanStep):
+    """Backward-compatible alias for plan steps."""
+
+
+class ExecutionPlan(BaseModel):
+    """Backward-compatible execution plan model."""
+    steps: list[CognitiveStep] = Field(description="Ordered list of steps")
     summary: str = Field(default="", description="Brief summary of the plan")
 
 

@@ -203,7 +203,7 @@ class TestBlocker002PromptInjection:
 class TestBlocker003PathTraversal:
     """Tests for BLOCKER-003: Path traversal in FileSink."""
 
-    def test_path_traversal_in_task_id_blocked(self, temp_dir):
+    async def test_path_traversal_in_task_id_blocked(self, temp_dir):
         """Verify path traversal in task_id is sanitized."""
         sink = FileSink()
         
@@ -226,7 +226,7 @@ class TestBlocker003PathTraversal:
         # Should not escape temp_dir
         assert not str(file_path).startswith("/etc")
 
-    def test_path_traversal_in_lease_id_blocked(self, temp_dir):
+    async def test_path_traversal_in_lease_id_blocked(self, temp_dir):
         """Verify path traversal in lease_id is sanitized."""
         sink = FileSink()
         
@@ -245,7 +245,7 @@ class TestBlocker003PathTraversal:
         file_path = Path(pointer.uri)
         assert temp_dir in file_path.parents
 
-    def test_dots_and_slashes_sanitized_from_paths(self, temp_dir):
+    async def test_dots_and_slashes_sanitized_from_paths(self, temp_dir):
         """Verify dots and slashes are removed from path components."""
         sink = FileSink()
         
@@ -276,7 +276,7 @@ class TestBlocker003PathTraversal:
             relative = file_path.relative_to(temp_dir)
             assert ".." not in str(relative)
 
-    def test_resolved_path_validation(self, temp_dir):
+    async def test_resolved_path_validation(self, temp_dir):
         """Verify resolved paths are checked against base_path."""
         sink = FileSink()
         
@@ -303,7 +303,7 @@ class TestBlocker003PathTraversal:
 class TestSecurityIntegration:
     """Integration tests combining multiple security concerns."""
 
-    def test_malicious_lease_end_to_end_safe(
+    async def test_malicious_lease_end_to_end_safe(
         self, malicious_lease, instruction_profile, temp_dir
     ):
         """Verify malicious lease is safely handled throughout system."""
@@ -335,7 +335,7 @@ class TestSecurityIntegration:
         assert temp_dir in file_path.parents
         assert "/etc" not in str(file_path)
 
-    def test_plugin_and_prompt_security_combined(
+    async def test_plugin_and_prompt_security_combined(
         self, unsafe_temp_dir, malicious_lease, instruction_profile
     ):
         """Verify both plugin and prompt security work together."""
