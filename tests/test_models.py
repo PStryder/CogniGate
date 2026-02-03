@@ -8,7 +8,7 @@ from pydantic import ValidationError
 from cognigate.models import (
     ArtifactPointer,
     CognitiveStep,
-    ExecutionPlan,
+    ExecutionSteps,
     Lease,
     Receipt,
     ReceiptStatus,
@@ -63,12 +63,13 @@ class TestLease:
         assert lease.payload == {}
 
 
-class TestExecutionPlan:
-    """Tests for ExecutionPlan model."""
+class TestExecutionSteps:
+    """Tests for ExecutionSteps model."""
 
-    def test_execution_plan_creation(self):
-        """Test creating an execution plan."""
-        plan = ExecutionPlan(
+    def test_execution_steps_creation(self):
+        """Test creating execution steps."""
+        plan = ExecutionSteps(
+            task_id="test-task",
             steps=[
                 CognitiveStep(
                     step_number=1,
@@ -84,17 +85,19 @@ class TestExecutionPlan:
         assert plan.steps[0].step_number == 1
         assert plan.summary == "Plan to analyze data"
 
-    def test_execution_plan_steps_required(self):
+    def test_execution_steps_required(self):
         """Test steps are required."""
         with pytest.raises(ValidationError):
-            ExecutionPlan(
-                summary="test"
+            ExecutionSteps(
+                task_id="test-task",
+                summary="test",
                 # Missing steps
             )
 
-    def test_execution_plan_empty_steps(self):
-        """Test plan can have empty steps list."""
-        plan = ExecutionPlan(
+    def test_execution_steps_empty_steps(self):
+        """Test steps can be an empty list."""
+        plan = ExecutionSteps(
+            task_id="test-task",
             steps=[],
             summary="Empty plan"
         )

@@ -10,7 +10,7 @@ import httpx
 import pytest
 
 from cognigate.config import Settings, Bootstrap, InstructionProfile, MCPEndpoint
-from cognigate.models import Lease, Receipt, JobStatus, ExecutionPlan, PlanStep, PlanStepType
+from cognigate.models import Lease, Receipt, JobStatus, PlanStep, PlanStepType
 
 
 class MockAsyncGateServer:

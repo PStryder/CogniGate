@@ -167,12 +167,6 @@ class CognitiveStep(PlanStep):
     """Backward-compatible alias for plan steps."""
 
 
-class ExecutionPlan(BaseModel):
-    """Backward-compatible execution plan model."""
-    steps: list[CognitiveStep] = Field(description="Ordered list of steps")
-    summary: str = Field(default="", description="Brief summary of the plan")
-
-
 class ToolCall(BaseModel):
     """A tool call request from the AI."""
     tool_name: str = Field(description="Name of the tool to call")
