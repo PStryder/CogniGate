@@ -25,8 +25,23 @@ except ImportError:
         CanonicalReceipt = None
 
 
-def _extract_artifact_fields(artifacts: list[dict[str, Any]] | None) -> dict[str, Any]:
-    artifact = artifacts[0] if artifacts else None
+def _normalize_artifacts(
+    artifacts: list[dict[str, Any]] | list[Any] | None,
+) -> list[dict[str, Any]]:
+    if not artifacts:
+        return []
+    normalized: list[dict[str, Any]] = []
+    for artifact in artifacts:
+        if isinstance(artifact, dict):
+            normalized.append(artifact)
+        elif hasattr(artifact, "model_dump"):
+            normalized.append(artifact.model_dump())
+    return normalized
+
+
+def _extract_artifact_fields(artifacts: list[dict[str, Any]] | list[Any] | None) -> dict[str, Any]:
+    normalized = _normalize_artifacts(artifacts)
+    artifact = normalized[0] if normalized else None
     if not isinstance(artifact, dict):
         return {
             "artifact_location": "NA",
@@ -117,10 +132,23 @@ def build_receipt(
         elif error_metadata:
             outcome_text = error_metadata.get("message", "NA")
 
-    artifact_fields = _extract_artifact_fields(artifact_pointers)
+    normalized_artifacts = _normalize_artifacts(artifact_pointers)
+    artifact_fields = _extract_artifact_fields(normalized_artifacts)
 
     caused_by_receipt_id = lease.caused_by_receipt_id or "NA"
     recipient_ai = worker_id if phase == "accepted" else owner_principal
+
+    body_payload: dict[str, Any] = {
+        "phase": phase,
+        "status": status,
+        "worker_id": worker_id,
+        "lease_id": lease.lease_id,
+        "summary": summary,
+        "artifacts": normalized_artifacts or None,
+        "error": error_metadata,
+        "started_at": started_at.isoformat() if started_at else None,
+        "completed_at": completed_at.isoformat() if completed_at else None,
+    }
 
     payload = {
         "schema_version": "1.0",
@@ -152,6 +180,8 @@ def build_receipt(
         "escalation_reason": "NA",
         "escalation_to": "NA",
         "retry_requested": False,
+        "body": body_payload,
+        "artifact_refs": normalized_artifacts,
         "created_at": now.isoformat(),
         "stored_at": now.isoformat(),
         "started_at": started_at.isoformat() if started_at else None,
