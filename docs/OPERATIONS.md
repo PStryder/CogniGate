@@ -49,8 +49,12 @@ This runbook provides operational procedures for deploying, monitoring, and main
 4. **Check health endpoints:**
    ```bash
    kubectl port-forward -n cognigate svc/cognigate 8000:8000
-   curl http://localhost:8000/health
-   curl http://localhost:8000/health/detailed
+   curl -s http://localhost:8000/mcp \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"cognigate.health","arguments":{}}}'
+   curl -s http://localhost:8000/mcp \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"cognigate.health_detailed","arguments":{}}}'
    ```
 
 ### Rolling Updates
@@ -76,7 +80,9 @@ kubectl apply -f deployment-v2.yaml
 
 # Test new version
 kubectl port-forward svc/cognigate-v2 8001:8000 -n cognigate
-curl http://localhost:8001/health
+curl -s http://localhost:8001/mcp \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"cognigate.health","arguments":{}}}'
 
 # Switch traffic
 kubectl patch svc cognigate -n cognigate -p '{"spec":{"selector":{"version":"v2"}}}'
@@ -93,7 +99,7 @@ kubectl delete deployment cognigate-v1 -n cognigate
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `COGNIGATE_ASYNCGATE_ENDPOINT` | Yes | `http://localhost:8080` | AsyncGate API endpoint |
+| `COGNIGATE_ASYNCGATE_ENDPOINT` | Yes | `http://localhost:8080/mcp` | AsyncGate MCP endpoint |
 | `COGNIGATE_ASYNCGATE_AUTH_TOKEN` | Yes | - | AsyncGate authentication token |
 | `COGNIGATE_AI_ENDPOINT` | No | `https://openrouter.ai/api/v1` | AI provider API endpoint |
 | `COGNIGATE_AI_API_KEY` | Yes | - | AI provider API key |
@@ -106,7 +112,7 @@ kubectl delete deployment cognigate-v1 -n cognigate
 | `COGNIGATE_WORKER_ID` | No | `cognigate-worker-1` | Unique worker identifier |
 | `COGNIGATE_HOST` | No | `0.0.0.0` | Server bind address |
 | `COGNIGATE_PORT` | No | `8000` | Server port |
-| `COGNIGATE_API_KEY` | Conditional | - | API key for REST auth |
+| `COGNIGATE_API_KEY` | Conditional | - | API key for MCP auth |
 | `COGNIGATE_REQUIRE_AUTH` | No | `true` | Require authentication |
 | `COGNIGATE_ALLOW_INSECURE_DEV` | No | `false` | Allow unauthenticated (dev only) |
 | `COGNIGATE_RATE_LIMIT_ENABLED` | No | `true` | Enable rate limiting |
@@ -218,12 +224,14 @@ cognigate_circuit_breaker_state == 1
 **Symptoms:**
 - `lease_claim_error` logs
 - No jobs being processed
-- `/health/detailed` shows `asyncgate: unhealthy`
+- `cognigate.health_detailed` shows `asyncgate: unhealthy`
 
 **Diagnosis:**
 ```bash
 # Check AsyncGate connectivity
-kubectl exec -n cognigate deploy/cognigate -- curl -s http://asyncgate:8080/health
+kubectl exec -n cognigate deploy/cognigate -- curl -s http://asyncgate:8080/mcp \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"asyncgate.health","arguments":{}}}'
 
 # Check logs
 kubectl logs -n cognigate -l app.kubernetes.io/name=cognigate --tail=100 | grep asyncgate
@@ -245,7 +253,9 @@ kubectl logs -n cognigate -l app.kubernetes.io/name=cognigate --tail=100 | grep 
 **Diagnosis:**
 ```bash
 # Check circuit breaker state
-curl -s http://localhost:8000/health/detailed | jq '.checks.ai_provider'
+curl -s http://localhost:8000/mcp \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"cognigate.health_detailed","arguments":{}}}' | jq '.result.checks.ai_provider'
 
 # Check AI error rate
 # PromQL: rate(cognigate_ai_requests_total{status="error"}[5m])
@@ -459,7 +469,9 @@ cat /var/lib/cognigate/dlq/receipts.json | jq .
 3. **Replay receipts manually:**
    ```bash
    # For each receipt, POST to AsyncGate
-   curl -X POST http://asyncgate:8080/v1/tasks/<task_id>/complete \
+   curl -s http://asyncgate:8080/mcp \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":12,"method":"tools/call","params":{"name":"asyncgate.complete","arguments":{"worker_id":"cognigate-worker","task_id":"<task_id>","lease_id":"<lease_id>","result":{"summary":"manual complete"},"tenant_id":"TENANT_ID"}}}'\
      -H "Authorization: Bearer $TOKEN" \
      -H "Content-Type: application/json" \
      -d @receipt.json
@@ -513,7 +525,9 @@ spec:
 
 ```bash
 # Via health endpoint
-curl -s http://localhost:8000/health/detailed | jq '.checks'
+curl -s http://localhost:8000/mcp \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":11,"method":"tools/call","params":{"name":"cognigate.health_detailed","arguments":{}}}' | jq '.result.checks'
 
 # Via Prometheus
 # PromQL: cognigate_circuit_breaker_state

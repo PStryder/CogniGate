@@ -55,7 +55,7 @@ class Settings(BaseSettings):
     )
 
     # AsyncGate settings (optional in standalone mode)
-    asyncgate_endpoint: str = Field(default="http://localhost:8080")
+    asyncgate_endpoint: str = Field(default="http://localhost:8080/mcp")
     asyncgate_auth_token: str = Field(default="")
     asyncgate_tenant_id: str = Field(default="default", description="AsyncGate tenant identifier")
 

@@ -23,6 +23,15 @@ from .fixtures import (
 pytestmark = pytest.mark.asyncio
 
 
+def _mcp_tool(body: dict) -> tuple[str | None, dict]:
+    params = body.get("params") or {}
+    return params.get("name"), params.get("arguments") or {}
+
+
+def _jsonrpc_result(body: dict, result: dict) -> dict:
+    return {"jsonrpc": "2.0", "id": body.get("id", 1), "result": result}
+
+
 class TestAsyncGateClientPolling:
     """Tests for AsyncGate polling functionality."""
 
@@ -40,8 +49,11 @@ class TestAsyncGateClientPolling:
 
         async def mock_request(request: httpx.Request) -> httpx.Response:
             body = json.loads(request.content)
-            result = await mock_asyncgate.handle_claim(body)
-            return httpx.Response(200, json=result)
+            tool_name, arguments = _mcp_tool(body)
+            if tool_name != "asyncgate.lease_next":
+                return httpx.Response(404, json={"error": "Unknown tool"})
+            result = await mock_asyncgate.handle_claim(arguments)
+            return httpx.Response(200, json=_jsonrpc_result(body, result))
 
         transport = httpx.MockTransport(mock_request)
         mock_client = httpx.AsyncClient(transport=transport)
@@ -60,7 +72,8 @@ class TestAsyncGateClientPolling:
         """Test polling when no work is available."""
 
         async def mock_request(request: httpx.Request) -> httpx.Response:
-            return httpx.Response(200, json={"tasks": []})
+            body = json.loads(request.content)
+            return httpx.Response(200, json=_jsonrpc_result(body, {"tasks": []}))
 
         transport = httpx.MockTransport(mock_request)
         mock_client = httpx.AsyncClient(transport=transport)
@@ -122,7 +135,8 @@ class TestAsyncGateClientPolling:
             }
 
             async def mock_request(request: httpx.Request) -> httpx.Response:
-                return httpx.Response(200, json=response_data)
+                body = json.loads(request.content)
+                return httpx.Response(200, json=_jsonrpc_result(body, response_data))
 
             transport = httpx.MockTransport(mock_request)
             mock_client = httpx.AsyncClient(transport=transport)
@@ -156,11 +170,12 @@ class TestAsyncGateClientReceipts:
         )
 
         async def mock_request(request: httpx.Request) -> httpx.Response:
-            if "/progress" in str(request.url):
-                body = json.loads(request.content)
-                await mock_asyncgate.handle_progress("task-1", body)
-                return httpx.Response(200, json={"accepted": True})
-            return httpx.Response(404)
+            body = json.loads(request.content)
+            tool_name, arguments = _mcp_tool(body)
+            if tool_name == "asyncgate.report_progress":
+                await mock_asyncgate.handle_progress("task-1", arguments)
+                return httpx.Response(200, json=_jsonrpc_result(body, {"accepted": True}))
+            return httpx.Response(404, json={"error": "Unknown tool"})
 
         transport = httpx.MockTransport(mock_request)
         mock_client = httpx.AsyncClient(transport=transport)
@@ -187,11 +202,12 @@ class TestAsyncGateClientReceipts:
         )
 
         async def mock_request(request: httpx.Request) -> httpx.Response:
-            if "/complete" in str(request.url):
-                body = json.loads(request.content)
-                await mock_asyncgate.handle_complete("task-1", body)
-                return httpx.Response(200, json={"accepted": True})
-            return httpx.Response(404)
+            body = json.loads(request.content)
+            tool_name, arguments = _mcp_tool(body)
+            if tool_name == "asyncgate.complete":
+                await mock_asyncgate.handle_complete("task-1", arguments)
+                return httpx.Response(200, json=_jsonrpc_result(body, {"accepted": True}))
+            return httpx.Response(404, json={"error": "Unknown tool"})
 
         transport = httpx.MockTransport(mock_request)
         mock_client = httpx.AsyncClient(transport=transport)
@@ -217,11 +233,12 @@ class TestAsyncGateClientReceipts:
         )
 
         async def mock_request(request: httpx.Request) -> httpx.Response:
-            if "/fail" in str(request.url):
-                body = json.loads(request.content)
-                await mock_asyncgate.handle_fail("task-1", body)
-                return httpx.Response(200, json={"accepted": True})
-            return httpx.Response(404)
+            body = json.loads(request.content)
+            tool_name, arguments = _mcp_tool(body)
+            if tool_name == "asyncgate.fail":
+                await mock_asyncgate.handle_fail("task-1", arguments)
+                return httpx.Response(200, json=_jsonrpc_result(body, {"accepted": True}))
+            return httpx.Response(404, json={"error": "Unknown tool"})
 
         transport = httpx.MockTransport(mock_request)
         mock_client = httpx.AsyncClient(transport=transport)
@@ -269,7 +286,8 @@ class TestAsyncGateClientAuth:
 
         async def mock_request(request: httpx.Request) -> httpx.Response:
             captured_headers.update(dict(request.headers))
-            return httpx.Response(200, json={"tasks": []})
+            body = json.loads(request.content)
+            return httpx.Response(200, json=_jsonrpc_result(body, {"tasks": []}))
 
         transport = httpx.MockTransport(mock_request)
         mock_client = httpx.AsyncClient(transport=transport)
@@ -289,7 +307,8 @@ class TestAsyncGateClientAuth:
 
         async def mock_request(request: httpx.Request) -> httpx.Response:
             captured_headers.update(dict(request.headers))
-            return httpx.Response(200, json={"tasks": []})
+            body = json.loads(request.content)
+            return httpx.Response(200, json=_jsonrpc_result(body, {"tasks": []}))
 
         transport = httpx.MockTransport(mock_request)
         mock_client = httpx.AsyncClient(transport=transport)
@@ -309,7 +328,8 @@ class TestWorkPollerLifecycle:
         """Test WorkPoller start and stop lifecycle."""
 
         async def mock_request(request: httpx.Request) -> httpx.Response:
-            return httpx.Response(200, json={"tasks": []})
+            body = json.loads(request.content)
+            return httpx.Response(200, json=_jsonrpc_result(body, {"tasks": []}))
 
         transport = httpx.MockTransport(mock_request)
         mock_client = httpx.AsyncClient(transport=transport)
@@ -360,11 +380,14 @@ class TestWorkPollerLifecycle:
         mock_asyncgate.add_lease(lease)
 
         async def mock_request(request: httpx.Request) -> httpx.Response:
-            if "/claim" in str(request.url):
-                body = json.loads(request.content)
-                result = await mock_asyncgate.handle_claim(body)
-                return httpx.Response(200, json=result)
-            return httpx.Response(200, json={"accepted": True})
+            body = json.loads(request.content)
+            tool_name, arguments = _mcp_tool(body)
+            if tool_name == "asyncgate.lease_next":
+                result = await mock_asyncgate.handle_claim(arguments)
+                return httpx.Response(200, json=_jsonrpc_result(body, result))
+            if tool_name in {"asyncgate.report_progress", "asyncgate.complete", "asyncgate.fail"}:
+                return httpx.Response(200, json=_jsonrpc_result(body, {"accepted": True}))
+            return httpx.Response(404, json={"error": "Unknown tool"})
 
         transport = httpx.MockTransport(mock_request)
         mock_client = httpx.AsyncClient(transport=transport)
@@ -412,11 +435,12 @@ class TestLeaseExtension:
         """Test successful lease extension."""
 
         async def mock_request(request: httpx.Request) -> httpx.Response:
-            if "/extend" in str(request.url):
-                lease_id = str(request.url).split("/v1/leases/")[1].split("/extend")[0]
-                await mock_asyncgate.handle_extend(lease_id)
-                return httpx.Response(200, json={"extended": True})
-            return httpx.Response(404)
+            body = json.loads(request.content)
+            tool_name, arguments = _mcp_tool(body)
+            if tool_name == "asyncgate.renew_lease":
+                await mock_asyncgate.handle_extend(arguments["lease_id"])
+                return httpx.Response(200, json=_jsonrpc_result(body, {"extended": True}))
+            return httpx.Response(404, json={"error": "Unknown tool"})
 
         transport = httpx.MockTransport(mock_request)
         mock_client = httpx.AsyncClient(transport=transport)
@@ -458,7 +482,8 @@ class TestRetryBehavior:
             attempt_count += 1
             if attempt_count < 3:
                 return httpx.Response(503, json={"error": "Service unavailable"})
-            return httpx.Response(200, json={"accepted": True})
+            body = json.loads(request.content)
+            return httpx.Response(200, json=_jsonrpc_result(body, {"accepted": True}))
 
         transport = httpx.MockTransport(mock_request)
         mock_client = httpx.AsyncClient(transport=transport)

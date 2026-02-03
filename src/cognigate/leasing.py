@@ -27,7 +27,12 @@ logger = get_logger(__name__)
 
 
 def _normalize_mcp_endpoint(endpoint: str) -> str:
-    return (endpoint or "").rstrip("/")
+    normalized = (endpoint or "").rstrip("/")
+    if not normalized:
+        return normalized
+    if not normalized.endswith("/mcp"):
+        normalized = f"{normalized}/mcp"
+    return normalized
 
 
 class DeadLetterQueue:
@@ -131,7 +136,6 @@ class AsyncGateClient:
         backoff_base: float = 2.0
     ):
         self.endpoint = _normalize_mcp_endpoint(settings.asyncgate_endpoint)
-        self._use_mcp = self.endpoint.rstrip("/").endswith("/mcp")
         self.auth_token = settings.asyncgate_auth_token
         self.worker_id = settings.worker_id
         self.tenant_id = settings.asyncgate_tenant_id
@@ -172,11 +176,6 @@ class AsyncGateClient:
             )
         return data.get("result", {})
 
-    async def _post_json(self, url: str, payload: dict[str, Any]) -> dict[str, Any]:
-        response = await self._client.post(url, json=payload, headers=self._headers())
-        response.raise_for_status()
-        return response.json() if response.content else {}
-
     @staticmethod
     def _serialize_artifacts(artifacts: list[Any]) -> list[dict[str, Any]]:
         serialized: list[dict[str, Any]] = []
@@ -199,10 +198,7 @@ class AsyncGateClient:
                 "max_tasks": 1,
                 "tenant_id": self.tenant_id,
             }
-            if self._use_mcp:
-                data = await self._mcp_call("asyncgate.lease_next", payload)
-            else:
-                data = await self._post_json(f"{self.endpoint}/v1/leases/claim", payload)
+            data = await self._mcp_call("asyncgate.lease_next", payload)
 
             tasks = data.get("tasks", [])
             if not tasks:
@@ -384,10 +380,7 @@ class AsyncGateClient:
             },
             "tenant_id": self.tenant_id,
         }
-        if self._use_mcp:
-            await self._mcp_call("asyncgate.report_progress", payload)
-        else:
-            await self._post_json(f"{self.endpoint}/v1/tasks/{receipt.task_id}/progress", payload)
+        await self._mcp_call("asyncgate.report_progress", payload)
         logger.info(f"Progress reported: lease={receipt.lease_id}, status={receipt.status}")
         return True
 
@@ -405,10 +398,7 @@ class AsyncGateClient:
             "artifacts": {"pointers": artifact_pointers} if artifact_pointers else None,
             "tenant_id": self.tenant_id,
         }
-        if self._use_mcp:
-            await self._mcp_call("asyncgate.complete", payload)
-        else:
-            await self._post_json(f"{self.endpoint}/v1/tasks/{receipt.task_id}/complete", payload)
+        await self._mcp_call("asyncgate.complete", payload)
         logger.info(f"Task completed: lease={receipt.lease_id}, status={receipt.status}")
         return True
 
@@ -425,10 +415,7 @@ class AsyncGateClient:
             "retryable": False,
             "tenant_id": self.tenant_id,
         }
-        if self._use_mcp:
-            await self._mcp_call("asyncgate.fail", payload)
-        else:
-            await self._post_json(f"{self.endpoint}/v1/tasks/{receipt.task_id}/fail", payload)
+        await self._mcp_call("asyncgate.fail", payload)
         logger.info(f"Task failed: lease={receipt.lease_id}, status={receipt.status}")
         return True
 
@@ -451,10 +438,7 @@ class AsyncGateClient:
                 "extend_by_seconds": None,
                 "tenant_id": self.tenant_id,
             }
-            if self._use_mcp:
-                await self._mcp_call("asyncgate.renew_lease", payload)
-            else:
-                await self._post_json(f"{self.endpoint}/v1/leases/{lease_id}/extend", payload)
+            await self._mcp_call("asyncgate.renew_lease", payload)
             return True
         except Exception as e:
             logger.error(f"Error extending lease {lease_id}: {e}")

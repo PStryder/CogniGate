@@ -17,7 +17,7 @@ sequenceDiagram
     AGC->>AGC: send_receipt_with_retry()
 
     loop Attempt 1 to max_retries (default: 5)
-        AGC->>AG: POST /v1/tasks/{id}/complete
+        AGC->>AG: POST /mcp (asyncgate.complete)
 
         alt HTTP 2xx Success
             AG-->>AGC: 200 OK
@@ -103,7 +103,7 @@ flowchart TD
 
     E --> F{AsyncGate reachable?}
     F -->|No| G[Wait and retry later]
-    F -->|Yes| H[POST receipt to AsyncGate]
+    F -->|Yes| H[POST /mcp (asyncgate.complete)]
 
     H --> I{Success?}
     I -->|Yes| J[Remove from DLQ]

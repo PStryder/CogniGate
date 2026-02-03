@@ -6,7 +6,7 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - COGNIGATE_ASYNCGATE_ENDPOINT=http://asyncgate:8080
+      - COGNIGATE_ASYNCGATE_ENDPOINT=http://asyncgate:8080/mcp
       - COGNIGATE_ASYNCGATE_AUTH_TOKEN=${ASYNCGATE_AUTH_TOKEN:-}
       - COGNIGATE_AI_ENDPOINT=${AI_ENDPOINT:-https://openrouter.ai/api/v1}
       - COGNIGATE_AI_API_KEY=${AI_API_KEY:-}

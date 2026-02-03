@@ -1,9 +1,14 @@
 #!/bin/bash
-# Test CogniGate standalone mode
+# Test CogniGate standalone mode (MCP)
 # Usage: ./test_standalone.sh [API_KEY] [BASE_URL]
 
 API_KEY="${1:-cg_test_key_12345}"
 BASE_URL="${2:-http://localhost:8000}"
+
+rpc() {
+  local payload="$1"
+  curl -s "$BASE_URL/mcp"     -H "X-API-Key: $API_KEY"     -H "Content-Type: application/json"     -d "$payload"
+}
 
 echo "=== Testing CogniGate Standalone Mode ==="
 echo "Base URL: $BASE_URL"
@@ -11,47 +16,37 @@ echo ""
 
 # Health check
 echo "1. Health check:"
-curl -s "$BASE_URL/health" | python -m json.tool 2>/dev/null || curl -s "$BASE_URL/health"
+rpc '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"cognigate.health","arguments":{}}}'   | python -m json.tool 2>/dev/null || true
 echo ""
 
 # Detailed health
 echo "2. Detailed health check:"
-curl -s "$BASE_URL/health/detailed" | python -m json.tool 2>/dev/null || curl -s "$BASE_URL/health/detailed"
+rpc '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"cognigate.health_detailed","arguments":{}}}'   | python -m json.tool 2>/dev/null || true
 echo ""
 
 # List profiles
 echo "3. List profiles:"
-curl -s -H "X-API-Key: $API_KEY" "$BASE_URL/v1/config/profiles" | python -m json.tool 2>/dev/null || curl -s -H "X-API-Key: $API_KEY" "$BASE_URL/v1/config/profiles"
+rpc '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"cognigate.list_profiles","arguments":{}}}'   | python -m json.tool 2>/dev/null || true
 echo ""
 
-# Submit job synchronously
+# Execute job synchronously
 echo "4. Execute job synchronously:"
-RECEIPT=$(curl -s -X POST "$BASE_URL/v1/jobs/execute" \
-  -H "X-API-Key: $API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "task_id": "test-001",
-    "payload": {
-      "instruction": "Say hello and describe your purpose in one sentence",
-      "context": "You are being tested in standalone mode"
-    },
-    "profile": "default"
-  }')
+RECEIPT=$(rpc '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"cognigate.execute_job","arguments":{"task_id":"test-001","payload":{"instruction":"Say hello and describe your purpose in one sentence","context":"You are being tested in standalone mode"},"profile":"default"}}}')
 
 echo "$RECEIPT" | python -m json.tool 2>/dev/null || echo "$RECEIPT"
-LEASE_ID=$(echo "$RECEIPT" | python -c "import sys,json; print(json.load(sys.stdin).get('lease_id',''))" 2>/dev/null)
+LEASE_ID=$(echo "$RECEIPT" | python -c "import sys,json; print((json.load(sys.stdin).get('result') or {}).get('lease_id',''))" 2>/dev/null)
 echo ""
 
 if [ -n "$LEASE_ID" ]; then
   # Get receipt
   echo "5. Get receipt by lease_id ($LEASE_ID):"
-  curl -s -H "X-API-Key: $API_KEY" "$BASE_URL/v1/receipts/$LEASE_ID" | python -m json.tool 2>/dev/null || curl -s -H "X-API-Key: $API_KEY" "$BASE_URL/v1/receipts/$LEASE_ID"
+  rpc '{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"cognigate.get_receipt","arguments":{"lease_id":"'"$LEASE_ID"'"}}}'     | python -m json.tool 2>/dev/null || true
   echo ""
 fi
 
 # List receipts
 echo "6. List all receipts:"
-curl -s -H "X-API-Key: $API_KEY" "$BASE_URL/v1/receipts?limit=10" | python -m json.tool 2>/dev/null || curl -s -H "X-API-Key: $API_KEY" "$BASE_URL/v1/receipts?limit=10"
+rpc '{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"cognigate.list_receipts","arguments":{"limit":10}}}'   | python -m json.tool 2>/dev/null || true
 echo ""
 
 echo "=== Test complete ==="

@@ -101,7 +101,7 @@ Environment variables (prefix `COGNIGATE_`):
 |----------|---------|-------------|
 | `STANDALONE_MODE` | true | Run without AsyncGate polling (local dev) |
 | `RECEIPT_STORAGE_DIR` | ./receipts | Receipt storage directory (standalone mode) |
-| `ASYNCGATE_ENDPOINT` | http://localhost:8080 | AsyncGate MCP endpoint |
+| `ASYNCGATE_ENDPOINT` | http://localhost:8080/mcp | AsyncGate MCP endpoint |
 | `ASYNCGATE_AUTH_TOKEN` | - | AsyncGate auth token |
 | `ASYNCGATE_TENANT_ID` | default | Tenant identifier for AsyncGate |
 | `RECEIPTGATE_ENDPOINT` | - | ReceiptGate MCP endpoint |

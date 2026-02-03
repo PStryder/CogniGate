@@ -9,7 +9,7 @@ metadata:
     app.kubernetes.io/component: config
 data:
   # AsyncGate connection
-  COGNIGATE_ASYNCGATE_ENDPOINT: "http://asyncgate.asyncgate.svc.cluster.local:8080"
+  COGNIGATE_ASYNCGATE_ENDPOINT: "http://asyncgate.asyncgate.svc.cluster.local:8080/mcp"
 
   # AI Provider settings
   COGNIGATE_AI_ENDPOINT: "https://openrouter.ai/api/v1"

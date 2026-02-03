@@ -101,6 +101,19 @@ class MockAsyncGateServer:
         return {"extended": True}
 
 
+def _mcp_tool_from_body(body: dict[str, Any]) -> tuple[str | None, dict[str, Any]]:
+    params = body.get("params") or {}
+    return params.get("name"), params.get("arguments") or {}
+
+
+def _jsonrpc_result(body: dict[str, Any], result: Any) -> dict[str, Any]:
+    return {"jsonrpc": "2.0", "id": body.get("id", 1), "result": result}
+
+
+def _jsonrpc_error(body: dict[str, Any], code: int, message: str) -> dict[str, Any]:
+    return {"jsonrpc": "2.0", "id": body.get("id", 1), "error": {"code": code, "message": message}}
+
+
 class MockAIProvider:
     """Mock AI provider for integration testing."""
 
@@ -234,26 +247,31 @@ class IntegrationTestHarness:
             url = str(request.url)
             body = json.loads(request.content) if request.content else {}
 
+            tool_name, arguments = _mcp_tool_from_body(body)
+
             # Route to AsyncGate
-            if "/v1/leases/claim" in url:
-                result = await self.asyncgate.handle_claim(body)
-                return httpx.Response(200, json=result)
-            elif "/v1/tasks/" in url and "/progress" in url:
-                task_id = url.split("/v1/tasks/")[1].split("/progress")[0]
-                result = await self.asyncgate.handle_progress(task_id, body)
-                return httpx.Response(200, json=result)
-            elif "/v1/tasks/" in url and "/complete" in url:
-                task_id = url.split("/v1/tasks/")[1].split("/complete")[0]
-                result = await self.asyncgate.handle_complete(task_id, body)
-                return httpx.Response(200, json=result)
-            elif "/v1/tasks/" in url and "/fail" in url:
-                task_id = url.split("/v1/tasks/")[1].split("/fail")[0]
-                result = await self.asyncgate.handle_fail(task_id, body)
-                return httpx.Response(200, json=result)
-            elif "/v1/leases/" in url and "/extend" in url:
-                lease_id = url.split("/v1/leases/")[1].split("/extend")[0]
-                result = await self.asyncgate.handle_extend(lease_id)
-                return httpx.Response(200, json=result)
+            if "/mcp" in url and tool_name and tool_name.startswith("asyncgate."):
+                if tool_name == "asyncgate.lease_next":
+                    result = await self.asyncgate.handle_claim(arguments)
+                    return httpx.Response(200, json=_jsonrpc_result(body, result))
+                if tool_name == "asyncgate.report_progress":
+                    result = await self.asyncgate.handle_progress(arguments["task_id"], arguments)
+                    return httpx.Response(200, json=_jsonrpc_result(body, result))
+                if tool_name == "asyncgate.complete":
+                    result = await self.asyncgate.handle_complete(arguments["task_id"], arguments)
+                    return httpx.Response(200, json=_jsonrpc_result(body, result))
+                if tool_name == "asyncgate.fail":
+                    result = await self.asyncgate.handle_fail(arguments["task_id"], arguments)
+                    return httpx.Response(200, json=_jsonrpc_result(body, result))
+                if tool_name == "asyncgate.renew_lease":
+                    result = await self.asyncgate.handle_extend(arguments["lease_id"])
+                    return httpx.Response(200, json=_jsonrpc_result(body, result))
+                if tool_name == "asyncgate.health":
+                    return httpx.Response(
+                        200,
+                        json=_jsonrpc_result(body, {"status": "healthy", "service": "AsyncGate"}),
+                    )
+                return httpx.Response(404, json=_jsonrpc_error(body, -32601, "Unknown tool"))
 
             # Route to AI provider
             elif "/chat/completions" in url:
@@ -402,7 +420,7 @@ tool_usage_rules: Use tools when necessary.
         config_dir=config_dir,
         plugins_dir=plugins_dir,
         profiles_dir=profiles_dir,
-        asyncgate_endpoint="http://localhost:8080",
+        asyncgate_endpoint="http://localhost:8080/mcp",
         asyncgate_auth_token="test-token",
         ai_endpoint="http://localhost:9001/v1",
         ai_api_key="test-ai-key",

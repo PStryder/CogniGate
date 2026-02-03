@@ -15,7 +15,7 @@ sequenceDiagram
     Note over WP: Polling loop starts
 
     loop Every polling_interval
-        WP->>AG: POST /v1/leases/claim
+        WP->>AG: POST /mcp (asyncgate.lease_next)
         alt No work available
             AG-->>WP: 200 OK (empty tasks)
         else Work available
@@ -25,7 +25,7 @@ sequenceDiagram
             WP->>WP: Track active job
             WP->>WP: Start heartbeat task
 
-            WP->>AG: POST /v1/tasks/{id}/progress (RUNNING)
+            WP->>AG: POST /mcp (asyncgate.report_progress, RUNNING)
             AG-->>WP: 200 OK
 
             WP->>JE: execute(lease)
@@ -56,7 +56,7 @@ sequenceDiagram
             JE-->>WP: Receipt (COMPLETE/FAILED)
 
             WP->>WP: Stop heartbeat
-            WP->>AG: POST /v1/tasks/{id}/complete
+            WP->>AG: POST /mcp (asyncgate.complete)
 
             alt Receipt delivery success
                 AG-->>WP: 200 OK
@@ -64,7 +64,7 @@ sequenceDiagram
             else Receipt delivery fails
                 Note over WP: Retry with backoff
                 loop Max retries
-                    WP->>AG: POST /v1/tasks/{id}/complete
+                    WP->>AG: POST /mcp (asyncgate.complete)
                     alt Success
                         AG-->>WP: 200 OK
                     else Still failing
