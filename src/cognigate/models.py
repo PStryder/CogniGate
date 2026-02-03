@@ -59,6 +59,15 @@ class Lease(BaseModel):
     constraints: dict[str, Any] = Field(default_factory=dict, description="Execution constraints")
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
+    @field_validator("constraints", mode="before")
+    @classmethod
+    def _normalize_constraints(cls, v: Any) -> dict[str, Any]:
+        if v is None:
+            return {}
+        if isinstance(v, dict):
+            return v
+        raise ValueError("constraints must be a dict")
+
     @field_validator("lease_id", "task_id")
     @classmethod
     def _non_empty_identifier(cls, v: str) -> str:

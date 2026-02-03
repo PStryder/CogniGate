@@ -34,6 +34,7 @@ class PromptBuilder:
             (r'SYSTEM\s+OVERRIDE', '[REDACTED_INJECTION]'),
             (r'IGNORE\s+(?:ALL\s+)?PREVIOUS', '[REDACTED_INJECTION]'),
             (r'YOU\s+ARE\s+NOW', '[REDACTED_INJECTION]'),
+            (r'\brm\s+-rf\s+/', '[REDACTED_COMMAND]'),
             (r'</s>', '[REDACTED_TAG]'),  # XML/special token injection
             (r'\[/?INST\]', '[REDACTED_TAG]'),  # Llama-style markers
             (r'<\|.*?\|>', '[REDACTED_TAG]'),  # Special tokens
