@@ -44,7 +44,11 @@ class FileSink(SinkPlugin):
         """Remove path separators and dangerous characters from filename component."""
         # Only allow alphanumeric, dash, and underscore
         sanitized = "".join(c for c in value if c.isalnum() or c in "-_")
-        return sanitized or "unknown"
+        sanitized = sanitized.strip("-_")
+        if not sanitized:
+            sanitized = "unknown"
+        # Prefix to avoid generating absolute-like path fragments such as "/etc..."
+        return f"safe_{sanitized}"
 
     async def deliver(
         self,
