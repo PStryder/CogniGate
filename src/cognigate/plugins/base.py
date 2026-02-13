@@ -26,7 +26,11 @@ class SinkPlugin(ABC):
     returning an artifact pointer.
     """
 
-    sink_id: str = ""
+    @property
+    @abstractmethod
+    def sink_id(self) -> str:
+        """Unique sink identifier."""
+        raise NotImplementedError
 
     @property
     def config_schema(self) -> dict[str, Any]:

@@ -119,7 +119,7 @@ class Receipt(BaseModel):
         """Backwards-compatible alias for artifact_pointers."""
         return self.artifact_pointers
 
-    def model_dump(self, *args, **kwargs):  # type: ignore[override]
+    def model_dump(self, *args, **kwargs):
         data = super().model_dump(*args, **kwargs)
         if "artifacts" not in data:
             data["artifacts"] = data.get("artifact_pointers", [])

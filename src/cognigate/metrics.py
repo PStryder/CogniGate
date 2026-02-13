@@ -87,7 +87,7 @@ TOOL_CALL_DURATION_SECONDS = Histogram(
 AI_REQUESTS_TOTAL = Counter(
     "cognigate_ai_requests_total",
     "Total number of AI API requests",
-    ["type", "result"],  # type: chat, plan; result: success, error
+    ["type", "result"],  # request kind: chat, plan; result: success, error
     registry=REGISTRY
 )
 
