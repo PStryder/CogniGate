@@ -6,7 +6,7 @@ import logging
 import os
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, field_validator, ValidationInfo
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator, ValidationInfo
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -174,15 +174,19 @@ class Settings(BaseSettings):
             raise ValueError("ai_api_key is required for CogniGate to function")
         return v
 
-    @field_validator("api_key")
-    @classmethod
-    def validate_api_key(cls, v: str, info: ValidationInfo) -> str:
-        """Validate API key is set when auth is required."""
-        require_auth = info.data.get("require_auth", True)
-        allow_insecure = info.data.get("allow_insecure_dev", False)
-        if require_auth and not v and not allow_insecure:
+    @model_validator(mode="after")
+    def validate_api_key(self) -> "Settings":
+        """Validate API key is set when auth is required.
+
+        Checked after every field is populated: a field_validator on api_key
+        cannot see require_auth or allow_insecure_dev, both declared later and
+        so never present in ValidationInfo.data -- allow_insecure_dev read as
+        False always, and COGNIGATE_ALLOW_INSECURE_DEV=true could not start
+        the service.
+        """
+        if self.require_auth and not self.api_key and not self.allow_insecure_dev:
             raise ValueError("api_key is required when require_auth=True and allow_insecure_dev=False")
-        return v
+        return self
 
     def get_asyncgate_config(self) -> AsyncGateConfig:
         return AsyncGateConfig(
