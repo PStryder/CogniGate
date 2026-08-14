@@ -16,6 +16,7 @@ from .leasing import AsyncGateClient, WorkPoller
 from .plugins import SinkRegistry, MCPAdapterRegistry
 from .plugins.builtin_sinks import register_builtin_sinks
 from .ai_client import AIClient
+from .stub_ai_client import build_ai_client
 from .tools import ToolExecutor
 from .executor import JobExecutor
 from .auth import AuthDependency
@@ -74,7 +75,7 @@ async def lifespan(app: FastAPI):
     log_level = os.environ.get("COGNIGATE_LOG_LEVEL", "INFO")
     configure_logging(log_level=log_level, json_logs=json_logs)
 
-    logger.info("cognigate_starting", event="startup_initiated")
+    logger.info("cognigate_starting")
 
     # Load settings
     state.settings = Settings()
@@ -125,7 +126,7 @@ async def lifespan(app: FastAPI):
     mcp_sink.set_mcp_registry(state.mcp_registry)
 
     # Initialize AI client
-    state.ai_client = AIClient(state.settings.get_ai_config())
+    state.ai_client = build_ai_client(state.settings)
 
     # Initialize tool executor
     state.tool_executor = ToolExecutor(
@@ -161,12 +162,12 @@ async def lifespan(app: FastAPI):
         state.receipt_store = ReceiptStore(state.settings.receipt_storage_dir)
         logger.info(f"Receipt storage enabled: {state.settings.receipt_storage_dir}")
 
-    logger.info("cognigate_started", event="startup_complete")
+    logger.info("cognigate_started")
 
     yield
 
     # Shutdown
-    logger.info("cognigate_shutdown", event="shutdown_initiated")
+    logger.info("cognigate_shutdown")
 
     if state.work_poller:
         # Graceful shutdown: wait for active jobs to complete (5 min timeout)
@@ -181,7 +182,7 @@ async def lifespan(app: FastAPI):
     if state.mcp_registry:
         await state.mcp_registry.close_all()
 
-    logger.info("cognigate_stopped", event="shutdown_complete")
+    logger.info("cognigate_stopped")
 
 
 # Create FastAPI app

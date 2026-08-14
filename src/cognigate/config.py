@@ -68,6 +68,10 @@ class Settings(BaseSettings):
     )
 
     # AI provider settings
+    # "stub" answers locally and deterministically so the lease -> execute ->
+    # artifact -> receipt path can run without a model or an API key. Testing
+    # only: it performs no reasoning.
+    ai_provider: str = Field(default="openrouter", description="AI provider: openrouter | stub")
     ai_endpoint: str = Field(default="https://openrouter.ai/api/v1")
     ai_api_key: str = Field(default="")
     ai_model: str = Field(default="anthropic/claude-3-opus")
@@ -175,13 +179,20 @@ class Settings(BaseSettings):
             raise ValueError(f"Endpoint URL must start with http:// or https://, got {v}")
         return v
 
-    @field_validator("ai_api_key")
-    @classmethod
-    def validate_ai_api_key(cls, v: str) -> str:
-        """Validate AI API key is set."""
-        if not v:
-            raise ValueError("ai_api_key is required for CogniGate to function")
-        return v
+    @model_validator(mode="after")
+    def validate_ai_api_key(self) -> "Settings":
+        """Require a provider key unless the stub provider is selected.
+
+        Checked after all fields are populated: a field_validator on ai_api_key
+        cannot see ai_provider, and the stub exists precisely so CogniGate can
+        run without a key.
+        """
+        if self.ai_provider.lower() != "stub" and not self.ai_api_key:
+            raise ValueError(
+                "ai_api_key is required for CogniGate to function "
+                "(or set ai_provider=stub for testing)"
+            )
+        return self
 
     @model_validator(mode="after")
     def validate_api_key(self) -> "Settings":
