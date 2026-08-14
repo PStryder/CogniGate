@@ -185,3 +185,55 @@ class TestInputHandling:
             response_format={"type": "json_object"},
         )
         json.loads(data["choices"][0]["message"]["content"])
+
+
+class TestRequireRealCognition:
+    """The stub is dangerous precisely because its output looks fine.
+
+    Nothing downstream distinguishes a stubbed artifact from a real one except
+    the [stub] marker, so a deployment that meant to reason must be able to
+    refuse canned output rather than discover it later in a receipt.
+    """
+
+    def test_stub_is_refused_when_real_cognition_is_required(self, monkeypatch) -> None:
+        monkeypatch.setenv("COGNIGATE_AI_PROVIDER", "stub")
+        monkeypatch.setenv("COGNIGATE_AI_REQUIRE_REAL", "true")
+        monkeypatch.setenv("COGNIGATE_ALLOW_INSECURE_DEV", "true")
+        with pytest.raises(Exception, match="refusing to start"):
+            Settings()
+
+    def test_missing_key_is_refused_when_real_cognition_is_required(self, monkeypatch) -> None:
+        monkeypatch.setenv("COGNIGATE_AI_PROVIDER", "openrouter")
+        monkeypatch.setenv("COGNIGATE_AI_REQUIRE_REAL", "true")
+        monkeypatch.setenv("COGNIGATE_ALLOW_INSECURE_DEV", "true")
+        monkeypatch.delenv("COGNIGATE_AI_API_KEY", raising=False)
+        with pytest.raises(Exception, match="no ai_api_key"):
+            Settings()
+
+    def test_real_provider_with_a_key_is_accepted(self, monkeypatch) -> None:
+        monkeypatch.setenv("COGNIGATE_AI_PROVIDER", "openrouter")
+        monkeypatch.setenv("COGNIGATE_AI_REQUIRE_REAL", "true")
+        monkeypatch.setenv("COGNIGATE_AI_API_KEY", "sk-not-real")
+        monkeypatch.setenv("COGNIGATE_ALLOW_INSECURE_DEV", "true")
+        assert Settings().ai_require_real is True
+
+    def test_stub_remains_usable_without_the_flag(self, monkeypatch) -> None:
+        """The default must stay convenient; this is opt-in strictness."""
+        monkeypatch.setenv("COGNIGATE_AI_PROVIDER", "stub")
+        monkeypatch.setenv("COGNIGATE_ALLOW_INSECURE_DEV", "true")
+        monkeypatch.delenv("COGNIGATE_AI_REQUIRE_REAL", raising=False)
+        settings = Settings()
+        assert settings.ai_provider == "stub"
+        assert settings.ai_require_real is False
+
+    def test_failure_is_reported_at_startup_not_at_job_time(self, monkeypatch) -> None:
+        """A worker that claims leases and then fails every one is worse.
+
+        The refusal must happen while building Settings, which is before the
+        poller exists, so nothing has been claimed.
+        """
+        monkeypatch.setenv("COGNIGATE_AI_PROVIDER", "stub")
+        monkeypatch.setenv("COGNIGATE_AI_REQUIRE_REAL", "true")
+        monkeypatch.setenv("COGNIGATE_ALLOW_INSECURE_DEV", "true")
+        with pytest.raises(Exception):
+            Settings()

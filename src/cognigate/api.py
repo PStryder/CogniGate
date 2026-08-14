@@ -351,6 +351,18 @@ async def detailed_health_check():
     if isinstance(mcp_checks, Exception):
         mcp_checks = {}
 
+    # Say which provider is actually live. Stub output is deliberately
+    # plausible, so "is this cognition or canned?" must be answerable from a
+    # running service rather than by reading its configuration.
+    provider = state.settings.ai_provider if state.settings else "unknown"
+    if isinstance(ai_check, dict):
+        ai_check = {
+            **ai_check,
+            "provider": provider,
+            "is_stub": provider.lower() == "stub",
+            "require_real": bool(state.settings.ai_require_real) if state.settings else False,
+        }
+
     checks = {
         "asyncgate": asyncgate_check,
         "ai_provider": ai_check,

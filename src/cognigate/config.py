@@ -72,6 +72,15 @@ class Settings(BaseSettings):
     # artifact -> receipt path can run without a model or an API key. Testing
     # only: it performs no reasoning.
     ai_provider: str = Field(default="openrouter", description="AI provider: openrouter | stub")
+    # Set where canned output must never be mistaken for reasoning. The stub
+    # answers plausibly and deterministically, which is exactly what makes it
+    # dangerous outside a test: nothing downstream can tell a stubbed artifact
+    # from a real one except the [stub] marker. This refuses to start rather
+    # than letting that ship.
+    ai_require_real: bool = Field(
+        default=False,
+        description="Refuse to start unless a real AI provider is configured",
+    )
     ai_endpoint: str = Field(default="https://openrouter.ai/api/v1")
     ai_api_key: str = Field(default="")
     ai_model: str = Field(default="anthropic/claude-3-opus")
@@ -178,6 +187,27 @@ class Settings(BaseSettings):
         if not v.startswith(("http://", "https://")):
             raise ValueError(f"Endpoint URL must start with http:// or https://, got {v}")
         return v
+
+    @model_validator(mode="after")
+    def validate_real_cognition_available(self) -> "Settings":
+        """Refuse to start with a stub when real cognition is required.
+
+        Failing at startup rather than at job time: a worker that has already
+        claimed leases and then reports every one as failed is worse than one
+        that never claimed them.
+        """
+        if self.ai_require_real:
+            if self.ai_provider.lower() == "stub":
+                raise ValueError(
+                    "ai_require_real=true but ai_provider=stub: refusing to start, "
+                    "because stub output is canned and would be indistinguishable "
+                    "from cognition downstream"
+                )
+            if not self.ai_api_key:
+                raise ValueError(
+                    "ai_require_real=true but no ai_api_key is configured"
+                )
+        return self
 
     @model_validator(mode="after")
     def validate_ai_api_key(self) -> "Settings":
