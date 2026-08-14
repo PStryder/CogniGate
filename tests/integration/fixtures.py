@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
+import pytest_asyncio
 
 from cognigate.config import Settings, Bootstrap, InstructionProfile, MCPEndpoint
 from cognigate.models import Lease, Receipt, JobStatus, PlanStep, PlanStepType
@@ -299,12 +300,18 @@ class IntegrationTestHarness:
             await self._http_client.aclose()
 
 
-@pytest.fixture
-def integration_harness():
-    """Create integration test harness."""
+@pytest_asyncio.fixture
+async def integration_harness():
+    """Create integration test harness.
+
+    Async so teardown can simply await. The previous sync version called
+    asyncio.get_event_loop().run_until_complete() during teardown, which raises
+    "There is no current event loop" once no loop is running -- it happened to
+    survive on Windows and failed on Linux CI.
+    """
     harness = IntegrationTestHarness()
     yield harness
-    asyncio.get_event_loop().run_until_complete(harness.close())
+    await harness.close()
 
 
 @pytest.fixture
