@@ -23,6 +23,7 @@ from .receipts import ReceiptStore
 from .middleware import get_rate_limiter
 from .observability import configure_logging, get_logger
 from .metrics import init_metrics, get_metrics_snapshot, ACTIVE_JOBS
+from .metagate_client import acknowledge_startup, bootstrap_from_metagate
 
 
 logger = get_logger(__name__)
@@ -77,6 +78,13 @@ async def lifespan(app: FastAPI):
 
     # Load settings
     state.settings = Settings()
+
+    # Resolve peer endpoints from MetaGate, after settings exist and before
+    # anything that uses them. Best-effort by design: a failure must never
+    # prevent startup, or the bootstrap authority becomes a hidden master.
+    _bootstrap = await bootstrap_from_metagate(state.settings)
+    if _bootstrap is not None and _bootstrap.succeeded:
+        await acknowledge_startup(state.settings, _bootstrap)
 
     # Initialize metrics
     init_metrics(
