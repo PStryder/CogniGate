@@ -237,6 +237,13 @@ class HealthResponse(BaseModel):
     mode: str = Field(description="Operation mode (standalone or asyncgate)")
 
 
+class PlanIntentRequest(BaseModel):
+    intent: str = Field(description="The intent to decompose into a plan")
+    task_type: str = Field(default="general", description="Default task type for steps")
+    profile: str = Field(default="default", description="Instruction profile to plan under")
+    context: dict[str, Any] = Field(default_factory=dict, description="Additional planning context")
+
+
 class SubmitJobRequest(BaseModel):
     task_id: str = Field(description="Unique task identifier")
     payload: dict[str, Any] = Field(description="Task payload")
@@ -425,6 +432,66 @@ async def liveness_check():
     # Simple liveness check - if we can respond, we're alive
     return {"alive": True}
 
+async def plan_intent(request: PlanIntentRequest) -> dict[str, Any]:
+    """Decompose an intent into a plan without executing any of it.
+
+    This exists for DeleGate, which holds the planning authority but has no
+    cognition of its own. It asks CogniGate what an intent decomposes into,
+    then mints the obligations itself -- so this must return a plan and stop,
+    never run it.
+
+    No lease is taken from AsyncGate: the caller is not claiming leased work,
+    it is asking a question. The synthetic lease exists only because the prompt
+    machinery is built around one, and carries a task_id marking it as such.
+    """
+    if not state.job_executor:
+        raise HTTPException(status_code=503, detail="Not ready")
+
+    import uuid
+
+    lease = Lease(
+        lease_id=f"plan-{uuid.uuid4()}",
+        task_id=f"plan-request-{uuid.uuid4()}",
+        payload={
+            "intent": request.intent,
+            "task_type": request.task_type,
+            **request.context,
+        },
+        profile=request.profile,
+    )
+
+    plan = await state.job_executor.plan_only(lease)
+
+    provider = getattr(state.settings, "ai_provider", "") if state.settings else ""
+    is_stub = provider.lower() == "stub"
+    # Reporting the configured model name while the stub answered would put a
+    # real model's name on canned output, which is the exact confusion is_stub
+    # exists to prevent.
+    model = None
+    if state.settings:
+        model = "stub/echo" if is_stub else getattr(state.settings, "ai_model", None)
+    return {
+        "status": "plan_created",
+        "intent": request.intent,
+        "summary": plan.summary,
+        "steps": [
+            {
+                "step_number": step.step_number,
+                "step_type": step.step_type.value,
+                "description": step.description,
+                "instructions": step.instructions,
+                "tool_name": step.tool_name,
+                "tool_params": step.tool_params,
+            }
+            for step in plan.steps
+        ],
+        # The caller has to be able to tell reasoning from canned output, and
+        # cannot inspect this process to find out.
+        "is_stub": is_stub,
+        "model": model,
+    }
+
+
 async def execute_job_sync(request: SubmitJobRequest):
     """Execute a job synchronously and return the receipt."""
     if not state.job_executor:
@@ -592,6 +659,24 @@ MCP_TOOLS = [
         },
     },
     {
+        "name": "cognigate.plan",
+        "description": (
+            "Decompose an intent into an ordered plan and return it. Performs "
+            "the planning phase only: nothing is executed, no tools are called "
+            "and no artifacts are written."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "intent": {"type": "string", "description": "The intent to decompose"},
+                "task_type": {"type": "string", "description": "Default task type for steps"},
+                "profile": {"type": "string", "description": "Instruction profile to plan under"},
+                "context": {"type": "object", "description": "Additional planning context"},
+            },
+            "required": ["intent"],
+        },
+    },
+    {
         "name": "cognigate.execute_job",
         "description": "Execute job synchronously",
         "inputSchema": {
@@ -706,6 +791,9 @@ async def _handle_tool(name: str, arguments: dict[str, Any]) -> Any:
             if max_bytes <= 0:
                 raise HTTPException(status_code=400, detail="max_bytes must be > 0")
         return get_metrics_snapshot(format=format_value, max_bytes=max_bytes)
+
+    if name == "cognigate.plan":
+        return await plan_intent(PlanIntentRequest(**arguments))
 
     if name == "cognigate.execute_job":
         request = SubmitJobRequest(**arguments)

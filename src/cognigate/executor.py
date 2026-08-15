@@ -125,6 +125,52 @@ class JobExecutor:
         """
         self._cancelled_jobs.discard(lease_id)
 
+    async def plan_only(self, lease: Lease) -> ExecutionSteps:
+        """Produce a plan for the lease without executing any of it.
+
+        DeleGate holds the planning authority but not the cognition to exercise
+        it, so it asks CogniGate to decompose an intent and then mints the
+        obligations itself. That has to stop after the planning phase: running
+        the execution loop here would have CogniGate performing the work while
+        DeleGate believes it is still deciding what the work is, and DeleGate's
+        stated invariant is that it never executes.
+
+        This deliberately shares the profile resolution and planning phase with
+        execute() rather than reimplementing them, so a plan handed to DeleGate
+        is the same plan CogniGate would have made for itself.
+
+        Args:
+            lease: A lease describing the intent to plan
+
+        Returns:
+            ExecutionSteps, unexecuted
+
+        Raises:
+            ExecutionError: if no instruction profile can be resolved
+        """
+        with JobContext(
+            task_id=lease.task_id,
+            lease_id=lease.lease_id,
+            worker_id=self.settings.worker_id,
+            profile=lease.profile,
+        ):
+            profile = self.bootstrap.get_profile(lease.profile)
+            if not profile:
+                profile = self.bootstrap.get_default_profile()
+            if not profile:
+                raise ExecutionError(
+                    f"No instruction profile found: {lease.profile}",
+                    code="PROFILE_NOT_FOUND",
+                )
+
+            plan = await self._planning_phase(lease, PromptBuilder(profile))
+            logger.info(
+                "plan_only_created",
+                task_id=lease.task_id,
+                step_count=len(plan.steps),
+            )
+            return plan
+
     async def execute(self, lease: Lease) -> Receipt:
         """Execute a leased job.
 
