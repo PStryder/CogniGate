@@ -113,34 +113,85 @@ python scripts/golden_path.py --endpoint http://localhost:8000/mcp --api-key cg_
 
 ## Configuration
 
-Environment variables (prefix `COGNIGATE_`):
+Environment variables (prefix `COGNIGATE_`). Generated from the `Settings`
+class; MetaGate bootstrap variables are documented in their own section below.
+
+`COGNIGATE_API_KEY` is **required** when `COGNIGATE_REQUIRE_AUTH=true` and `COGNIGATE_ALLOW_INSECURE_DEV=false`; startup fails without it. Separately, `COGNIGATE_ASYNCGATE_AUTH_TOKEN` is required unless `COGNIGATE_STANDALONE_MODE=true`.
+
+See `.env.example` for a working starting point.
+
+### Server
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `STANDALONE_MODE` | true | Run without AsyncGate polling (local dev) |
-| `RECEIPT_STORAGE_DIR` | ./receipts | Receipt storage directory (standalone mode) |
-| `ASYNCGATE_ENDPOINT` | http://localhost:8080/mcp | AsyncGate MCP endpoint |
-| `ASYNCGATE_AUTH_TOKEN` | - | AsyncGate auth token |
-| `ASYNCGATE_TENANT_ID` | default | Tenant identifier for AsyncGate |
-| `RECEIPTGATE_ENDPOINT` | - | ReceiptGate MCP endpoint |
-| `RECEIPTGATE_AUTH_TOKEN` | - | ReceiptGate auth token |
-| `RECEIPTGATE_EMIT_RECEIPTS` | true | Emit LegiVellum receipts |
-| `AI_ENDPOINT` | https://openrouter.ai/api/v1 | AI provider endpoint |
-| `AI_API_KEY` | - | AI provider key |
-| `AI_MODEL` | anthropic/claude-3-opus | AI model |
-| `AI_MAX_TOKENS` | 4096 | Max tokens |
-| `POLLING_INTERVAL` | 5.0 | Polling interval in seconds |
-| `MAX_CONCURRENT_JOBS` | 1 | Max concurrent jobs |
-| `JOB_TIMEOUT` | 300 | Job timeout in seconds |
-| `MAX_RETRIES` | 3 | Max tool retries |
-| `HOST` | 0.0.0.0 | Server host |
-| `PORT` | 8000 | Server port |
-| `WORKER_ID` | cognigate-worker-1 | Worker identifier |
-| `API_KEY` | - | API key for MCP requests |
-| `REQUIRE_AUTH` | true | Require API key for MCP |
-| `ALLOW_INSECURE_DEV` | false | Disable auth checks (dev only) |
+| `COGNIGATE_HOST` | `0.0.0.0` | Bind address |
+| `COGNIGATE_PORT` | `8000` | Bind port |
+| `COGNIGATE_WORKER_ID` | `cognigate-worker-1` | Worker identifier, used when leasing from AsyncGate |
 
-See `.env.example` and `.env.standalone.example` for a complete set.
+### Authentication
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `COGNIGATE_ALLOW_INSECURE_DEV` | `false` | Allow unauthenticated access (dev only) |
+| `COGNIGATE_API_KEY` | *(empty)* | API key for REST endpoint authentication |
+| `COGNIGATE_REQUIRE_AUTH` | `true` | Require authentication for REST endpoints |
+
+### Upstream services
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `COGNIGATE_ASYNCGATE_AUTH_TOKEN` | *(empty)* | Auth token presented to AsyncGate |
+| `COGNIGATE_ASYNCGATE_ENDPOINT` | `http://localhost:8080/mcp` | AsyncGate MCP endpoint |
+| `COGNIGATE_ASYNCGATE_TENANT_ID` | `default` | AsyncGate tenant identifier |
+| `COGNIGATE_RECEIPTGATE_AUTH_TOKEN` | *(empty)* | Auth token for ReceiptGate |
+| `COGNIGATE_RECEIPTGATE_EMIT_RECEIPTS` | `true` | Emit LegiVellum receipts to ReceiptGate |
+| `COGNIGATE_RECEIPTGATE_ENDPOINT` | *(empty)* | ReceiptGate MCP endpoint |
+
+### AI and cognition
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `COGNIGATE_AI_API_KEY` | *(empty)* | AI provider key |
+| `COGNIGATE_AI_ENDPOINT` | `https://openrouter.ai/api/v1` | AI provider endpoint (OpenAI-compatible) |
+| `COGNIGATE_AI_MAX_TOKENS` | `4096` | Maximum tokens per completion |
+| `COGNIGATE_AI_MODEL` | `anthropic/claude-3-opus` | Model used for cognition |
+| `COGNIGATE_AI_PROVIDER` | `openrouter` | AI provider: openrouter | stub |
+| `COGNIGATE_AI_REQUIRE_REAL` | `false` | Refuse to start unless a real AI provider is configured |
+
+### Storage and sinks
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `COGNIGATE_CONFIG_DIR` | `Path('/etc/cognigate')` | Directory holding `mcp.yaml` |
+| `COGNIGATE_PLUGINS_DIR` | `Path('/etc/cognigate/plugins')` | Directory scanned for sink plugins |
+| `COGNIGATE_PROFILES_DIR` | `Path('/etc/cognigate/profiles')` | Directory holding instruction profiles |
+| `COGNIGATE_RECEIPT_STORAGE_DIR` | `Path('./receipts')` | Directory for receipt storage (standalone mode) |
+
+### Rate limiting
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `COGNIGATE_RATE_LIMIT_ENABLED` | `true` | Enable rate limiting |
+| `COGNIGATE_RATE_LIMIT_REQUESTS_PER_MINUTE` | `50` | Rate limit per minute |
+
+### CORS
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `COGNIGATE_CORS_ALLOW_CREDENTIALS` | `true` | Allow credentials in CORS requests |
+| `COGNIGATE_CORS_ALLOWED_HEADERS` | `['Authorization', 'Content-Type', 'X-Tenant-ID']` | Allowed request headers |
+| `COGNIGATE_CORS_ALLOWED_METHODS` | `['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS']` | Allowed HTTP methods |
+| `COGNIGATE_CORS_ALLOWED_ORIGINS` | `['http://localhost:3000', 'http://localhost:8080']` | Allowed CORS origins (explicit allowlist for security) |
+
+### Behaviour and limits
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `COGNIGATE_JOB_TIMEOUT` | `300` | Per-job timeout in seconds |
+| `COGNIGATE_MAX_CONCURRENT_JOBS` | `1` | Maximum jobs executed at once |
+| `COGNIGATE_MAX_RETRIES` | `3` | Retries for a failed tool call |
+| `COGNIGATE_POLLING_INTERVAL` | `5.0` | Seconds between AsyncGate polls |
+| `COGNIGATE_STANDALONE_MODE` | `true` | Run in standalone mode without AsyncGate |
 
 ## Standalone Mode
 
