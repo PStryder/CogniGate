@@ -9,23 +9,15 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from legivellum.ulid import derive_ulid
+
 from .models import Lease
 
-try:
-    from legivellum.models import Receipt as CanonicalReceipt
-except ImportError:
-    # Walk real ancestors rather than indexing a fixed depth: parents[4] raises
-    # IndexError when the module sits shallower (e.g. inside a container).
-    CanonicalReceipt = None
-    for parent in Path(__file__).resolve().parents:
-        shared_root = parent / "LegiVellum" / "shared"
-        if shared_root.exists():
-            sys.path.append(str(shared_root))
-            try:
-                from legivellum.models import Receipt as CanonicalReceipt
-            except ImportError:
-                CanonicalReceipt = None
-            break
+# Hard dependency, imported unguarded. The parent-directory walk this replaces
+# found LegiVellum/shared in a checkout and nothing in a container, so
+# CanonicalReceipt was None in every deployment and this module posted
+# unvalidated dictionaries whose rejections were logged and dropped.
+from legivellum.models import Receipt as CanonicalReceipt
 
 
 def _normalize_artifacts(
@@ -158,6 +150,11 @@ def build_receipt(
         "tenant_id": lease.tenant_id or "default",
         "receipt_id": receipt_id or str(uuid4()),
         "task_id": lease.task_id,
+        # One lease is one obligation. accepted and complete are built from
+        # different call sites with no shared state, so the id is derived from
+        # the lease rather than minted twice -- otherwise the closing receipt
+        # would name an obligation that was never opened.
+        "obligation_id": derive_ulid("cognigate.lease", lease.lease_id),
         "parent_task_id": "NA",
         "caused_by_receipt_id": caused_by_receipt_id,
         "dedupe_key": lease.lease_id,
@@ -196,8 +193,5 @@ def build_receipt(
             "worker_id": worker_id,
         },
     }
-
-    if CanonicalReceipt is None:
-        return payload
 
     return CanonicalReceipt.model_validate(payload).model_dump(mode="json")
