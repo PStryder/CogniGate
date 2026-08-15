@@ -208,7 +208,42 @@ COGNIGATE_STANDALONE_MODE=true
 CogniGate emits LegiVellum receipts to ReceiptGate when configured.
 Set `COGNIGATE_RECEIPTGATE_ENDPOINT` and `COGNIGATE_RECEIPTGATE_AUTH_TOKEN` to enable.
 
-## Tool Surface
+## MCP Tools
+
+What CogniGate advertises to *callers* on `/mcp`. Distinct from the tool surface
+below, which is what CogniGate advertises to the *model*. This is the full set
+reported by `tools/list`.
+
+Planning:
+- `cognigate.plan` — decompose an intent and return the plan, executing nothing
+
+Job execution:
+- `cognigate.execute_job` — execute a job synchronously
+- `cognigate.submit_job` — submit a job for background execution
+- `cognigate.cancel_job` — cancel a running job
+
+AsyncGate polling:
+- `cognigate.polling_start` — begin leasing work from AsyncGate
+- `cognigate.polling_stop` — stop leasing
+
+A freshly started CogniGate holds no leases until `polling_start` is called.
+That is deliberate: a cognitive worker should not begin consuming obligations
+merely because its process exists.
+
+Receipts (standalone mode):
+- `cognigate.list_receipts` — list recent receipts
+- `cognigate.get_receipt` — fetch a receipt by lease id
+
+Configuration discovery:
+- `cognigate.list_profiles` — instruction profiles available
+- `cognigate.list_sinks` — output sinks available
+- `cognigate.list_mcp_adapters` — MCP adapters available
+
+Health and status:
+- `cognigate.health`, `cognigate.health_detailed`, `cognigate.ready`,
+  `cognigate.live`, `cognigate.metrics`
+
+## Tool Surface (model-facing)
 
 CogniGate advertises a minimal tool surface to the AI model:
 
