@@ -85,6 +85,24 @@ curl -s http://localhost:8000/mcp \
   -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"cognigate.execute_job","arguments":{"task_id":"demo-001","payload":{"task":"Summarize the text","context":"LegiVellum uses receipts for coordination."},"profile":"default","sink_config":{"sink_id":"stdout"}}}}'
 ```
 
+Plan an intent without executing it:
+```bash
+curl -s http://localhost:8000/mcp \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: cg_your-secret-api-key" \
+  -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"cognigate.plan","arguments":{"intent":"research competitors and draft a summary report","task_type":"general","profile":"default"}}}'
+```
+
+`cognigate.plan` runs the planning phase and stops: nothing is executed, no
+tools are called, no artifacts are written, and no lease is taken. It exists
+for DeleGate, which holds the planning authority but no cognition of its own —
+DeleGate asks what an intent decomposes into and then mints the obligations
+itself, so CogniGate returns a plan document and never mints anything.
+
+The response includes `is_stub` and `model`. When the stub provider answered,
+these read `true` and `stub/echo`, because a caller cannot inspect this process
+to find out whether any reasoning happened.
+
 For local development you can set `COGNIGATE_ALLOW_INSECURE_DEV=true` to bypass auth.
 
 ### Golden path script
@@ -214,6 +232,26 @@ MCP adapters connect to upstream MCP servers with:
 - Boring in the right places
 
 CogniGate exists to make AI cognition interruptible, auditable, recoverable, and safe to embed in real systems without pretending it is a mind.
+
+## MetaGate Bootstrap
+
+On startup this gate asks MetaGate for the topology it belongs to and fills in
+endpoints the operator did not configure. It resolves: `receiptgate` → `receiptgate_endpoint`, `asyncgate` → `asyncgate_endpoint`.
+
+| Variable | Default | Meaning |
+|----------|---------|---------|
+| `COGNIGATE_METAGATE_ENDPOINT` | *(unset)* | MetaGate MCP endpoint. Unset disables bootstrap; the gate starts on configured values alone. |
+| `COGNIGATE_METAGATE_API_KEY` | *(unset)* | Credential presented to MetaGate |
+| `COGNIGATE_METAGATE_COMPONENT_KEY` | `cognigate` | Which component in the manifest this process is |
+| `COGNIGATE_METAGATE_BOOTSTRAP_TIMEOUT_SECONDS` | `5.0` | Per-call timeout |
+
+Bootstrap never prevents startup. Every failure — unreachable, timeout, auth
+rejected, no binding, malformed packet — degrades to a logged warning and
+"carry on with configured values", because a bootstrap authority that can take
+the mesh down would be a hidden master. Explicit configuration always wins;
+bootstrap fills gaps and logs when the mesh disagrees rather than overriding.
+
+See `LegiVellum/docs/canonical/metagate.bootstrap.md` for the full contract.
 
 ## License
 
