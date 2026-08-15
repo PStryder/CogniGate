@@ -193,7 +193,7 @@ YAML files in `PROFILES_DIR` defining:
 
 ### MCP Endpoints
 
-YAML configuration in `CONFIG_DIR/mcp.yaml`:
+YAML configuration in `$COGNIGATE_CONFIG_DIR/mcp.yaml` (the directory named by `COGNIGATE_CONFIG_DIR`; `/etc/cognigate` in the demo stack):
 ```yaml
 mcp_endpoints:
   - name: github

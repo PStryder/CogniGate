@@ -115,8 +115,8 @@ Target coverage: **80%+ for security-critical code**
 
 Priority coverage areas:
 1. `prompt.py` - 100% (prompt injection prevention)
-2. `plugins/base.py` - 100% (plugin security)
-3. `plugins/builtin_sinks.py` - 100% (path traversal prevention)
+2. `src/cognigate/plugins/base.py` - 100% (plugin security)
+3. `src/cognigate/plugins/builtin_sinks.py` - 100% (path traversal prevention)
 4. `models.py` - 90%
 5. Other modules - 70%+
 
