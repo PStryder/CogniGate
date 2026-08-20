@@ -28,8 +28,11 @@ logger = logging.getLogger(__name__)
 _SHARED_RELPATH = Path("LegiVellum") / "shared" / "legivellum" / "metagate_bootstrap.py"
 
 # (primitive type in the manifest, settings attribute it fills)
+# No receiptgate binding: CogniGate does not talk to the ledger. It is a worker,
+# and a worker does not mint obligations -- AsyncGate holds the lease and
+# proposes acceptance and completion on its behalf. Binding an endpoint the
+# component never calls would hand it a capability it must not have.
 _BINDING_SPECS: tuple[tuple[str, str], ...] = (
-    ("receiptgate", "receiptgate_endpoint"),
     ("asyncgate", "asyncgate_endpoint"),
 )
 

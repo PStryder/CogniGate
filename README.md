@@ -143,9 +143,6 @@ See `.env.example` for a working starting point.
 | `COGNIGATE_ASYNCGATE_AUTH_TOKEN` | *(empty)* | Auth token presented to AsyncGate |
 | `COGNIGATE_ASYNCGATE_ENDPOINT` | `http://localhost:8080/mcp` | AsyncGate MCP endpoint |
 | `COGNIGATE_ASYNCGATE_TENANT_ID` | `default` | AsyncGate tenant identifier |
-| `COGNIGATE_RECEIPTGATE_AUTH_TOKEN` | *(empty)* | Auth token for ReceiptGate |
-| `COGNIGATE_RECEIPTGATE_EMIT_RECEIPTS` | `true` | Emit LegiVellum receipts to ReceiptGate |
-| `COGNIGATE_RECEIPTGATE_ENDPOINT` | *(empty)* | ReceiptGate MCP endpoint |
 
 ### AI and cognition
 
@@ -206,7 +203,9 @@ COGNIGATE_STANDALONE_MODE=true
 ## Receipts
 
 CogniGate emits LegiVellum receipts to ReceiptGate when configured.
-Set `COGNIGATE_RECEIPTGATE_ENDPOINT` and `COGNIGATE_RECEIPTGATE_AUTH_TOKEN` to enable.
+CogniGate does not write to ReceiptGate. It is a worker, and a worker does
+not mint obligations: AsyncGate holds the lease and proposes acceptance and
+completion on the worker's behalf.
 
 ## MCP Tools
 

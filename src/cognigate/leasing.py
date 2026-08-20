@@ -9,8 +9,6 @@ from typing import Callable, Awaitable, Any
 import httpx
 
 from .config import Settings
-from .legivellum_receipts import build_receipt
-from .receiptgate_client import ReceiptGateClient
 from .models import Lease, Receipt, JobStatus
 from .observability import get_logger
 from .metrics import (
@@ -465,7 +463,6 @@ class WorkPoller:
         self.polling_interval = settings.polling_interval
         self.max_concurrent = settings.max_concurrent_jobs
         self.heartbeat_interval = heartbeat_interval
-        self._receiptgate_client = ReceiptGateClient(settings)
         self._running = False
         self._shutting_down = False
         self._active_jobs: set[str] = set()
@@ -499,7 +496,6 @@ class WorkPoller:
         """Stop the polling loop immediately."""
         logger.info("work_poller_stopping")
         self._running = False
-        await self._receiptgate_client.close()
 
     async def stop_gracefully(self, timeout: float = 300.0) -> None:
         """Stop the polling loop and wait for active jobs to complete.
@@ -534,10 +530,9 @@ class WorkPoller:
                 remaining_jobs=len(self._active_jobs),
                 timed_out_leases=list(self._active_jobs)
             )
-            # Send failure receipts for timed-out jobs
+            # Report the timed-out jobs to AsyncGate, which holds the lease and
+            # is what notarises on this worker's behalf.
             await self._send_timeout_receipts()
-        finally:
-            await self._receiptgate_client.close()
 
     async def _wait_for_jobs_completion(self) -> None:
         """Wait for all active jobs to complete."""
@@ -578,14 +573,6 @@ class WorkPoller:
                 )
                 success = await self.client.send_receipt(error_receipt)
                 record_receipt_sent("failed", success)
-                await self._emit_legivellum_receipt(
-                    lease,
-                    phase="complete",
-                    status="failure",
-                    summary=error_metadata["message"],
-                    error_metadata=error_metadata,
-                    completed_at=error_receipt.timestamp,
-                )
                 self._job_leases.pop(lease_id, None)
             else:
                 logger.error(
@@ -727,12 +714,6 @@ class WorkPoller:
                 )
                 success = await self.client.send_receipt(acceptance_receipt)
                 record_receipt_sent("running", success)
-                await self._emit_legivellum_receipt(
-                    lease,
-                    phase="accepted",
-                    status="NA",
-                    started_at=started_at,
-                )
 
                 # Execute the job
                 final_receipt = await self.handler(lease)
@@ -740,16 +721,6 @@ class WorkPoller:
                 # Send completion receipt
                 success = await self.client.send_receipt(final_receipt)
                 record_receipt_sent(final_receipt.status.value, success)
-                await self._emit_legivellum_receipt(
-                    lease,
-                    phase="complete",
-                    status="success" if final_receipt.status == JobStatus.COMPLETE else "failure",
-                    summary=final_receipt.summary,
-                    artifact_pointers=final_receipt.artifact_pointers,
-                    error_metadata=final_receipt.error_metadata,
-                    started_at=started_at,
-                    completed_at=final_receipt.timestamp,
-                )
 
             except asyncio.CancelledError:
                 logger.warning(
@@ -767,14 +738,6 @@ class WorkPoller:
                     error_metadata={"code": "SHUTDOWN_CANCELLED", "message": "Job cancelled during shutdown"}
                 )
                 await self.client.send_receipt(error_receipt)
-                await self._emit_legivellum_receipt(
-                    lease,
-                    phase="complete",
-                    status="failure",
-                    summary="Job cancelled during shutdown",
-                    error_metadata=error_receipt.error_metadata,
-                    completed_at=error_receipt.timestamp,
-                )
                 raise
 
             except Exception as e:
@@ -793,14 +756,6 @@ class WorkPoller:
                 )
                 success = await self.client.send_receipt(error_receipt)
                 record_receipt_sent("failed", success)
-                await self._emit_legivellum_receipt(
-                    lease,
-                    phase="complete",
-                    status="failure",
-                    summary=str(e),
-                    error_metadata=error_receipt.error_metadata,
-                    completed_at=error_receipt.timestamp,
-                )
 
             finally:
                 # Stop heartbeat first
@@ -812,53 +767,3 @@ class WorkPoller:
                 self._job_leases.pop(lease.lease_id, None)
                 ACTIVE_JOBS.dec()
 
-    async def _emit_legivellum_receipt(
-        self,
-        lease: Lease,
-        phase: str,
-        status: str,
-        summary: str | None = None,
-        artifact_pointers: list[dict[str, Any]] | None = None,
-        error_metadata: dict[str, Any] | None = None,
-        started_at: datetime | None = None,
-        completed_at: datetime | None = None,
-    ) -> None:
-        """Emit a LegiVellum receipt to ReceiptGate if configured."""
-        receipt = build_receipt(
-            lease=lease,
-            phase=phase,
-            status=status,
-            worker_id=self.settings.worker_id,
-            summary=summary,
-            artifact_pointers=artifact_pointers,
-            error_metadata=error_metadata,
-            started_at=started_at,
-            completed_at=completed_at,
-        )
-        receipt_id = receipt.get("receipt_id")
-        logger.info(
-            "receiptgate_receipt_prepared",
-            receipt_id=receipt_id,
-            lease_id=lease.lease_id,
-            task_id=lease.task_id,
-            phase=phase,
-            status=status,
-            recipient_ai=receipt.get("recipient_ai"),
-        )
-        success = await self._receiptgate_client.emit_receipt(receipt)
-        if success:
-            logger.info(
-                "receiptgate_receipt_emitted",
-                receipt_id=receipt_id,
-                lease_id=lease.lease_id,
-                task_id=lease.task_id,
-                phase=phase,
-            )
-        else:
-            logger.debug(
-                "receiptgate_receipt_skipped",
-                receipt_id=receipt_id,
-                lease_id=lease.lease_id,
-                phase=phase,
-                task_id=lease.task_id,
-            )

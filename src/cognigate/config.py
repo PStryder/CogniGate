@@ -59,13 +59,9 @@ class Settings(BaseSettings):
     asyncgate_auth_token: str = Field(default="")
     asyncgate_tenant_id: str = Field(default="default", description="AsyncGate tenant identifier")
 
-    # ReceiptGate settings (optional)
-    receiptgate_endpoint: str = Field(default="", description="ReceiptGate MCP endpoint")
-    receiptgate_auth_token: str = Field(default="", description="Auth token for ReceiptGate")
-    receiptgate_emit_receipts: bool = Field(
-        default=True,
-        description="Emit LegiVellum receipts to ReceiptGate",
-    )
+    # No ReceiptGate settings. CogniGate does not write to the ledger: it is a
+    # worker, and a worker does not mint obligations. AsyncGate holds the lease
+    # and proposes acceptance and completion on the worker's behalf.
 
     # AI provider settings
     # "stub" answers locally and deterministically so the lease -> execute ->
@@ -161,14 +157,6 @@ class Settings(BaseSettings):
         standalone = info.data.get("standalone_mode", True)
         if not standalone and v and not v.startswith(("http://", "https://")):
             raise ValueError(f"Endpoint URL must start with http:// or https://, got {v}")
-        return v
-
-    @field_validator("receiptgate_endpoint")
-    @classmethod
-    def validate_receiptgate_endpoint(cls, v: str, info: ValidationInfo) -> str:
-        """Validate ReceiptGate endpoint if provided."""
-        if v and not v.startswith(("http://", "https://")):
-            raise ValueError(f"receiptgate_endpoint must start with http:// or https://, got {v}")
         return v
 
     @field_validator("asyncgate_auth_token")
